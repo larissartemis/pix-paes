@@ -2,6 +2,7 @@
 
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import {
+  AlertTriangle,
   Check,
   ChevronDown,
   ChevronUp,
@@ -16,6 +17,7 @@ import {
   Trash2,
   Upload,
   UserCheck,
+  X,
 } from "lucide-react";
 import { consumeSharedPayload } from "@/lib/share-db";
 import {
@@ -41,6 +43,17 @@ function extractFirstUrl(input: string): string | null {
   return match ? match[0] : null;
 }
 
+function isPassakyReceiver(parsed: ParsedReceipt): boolean {
+  const name = (parsed.receiverName || "").toLowerCase();
+  const doc = (parsed.receiverDocument || "").replace(/\D/g, "");
+  const key = (parsed.pixKey || "").toLowerCase();
+  return (
+    name.includes("passaky") ||
+    doc === "40929283000175" ||
+    key.includes("passaky")
+  );
+}
+
 export function ReceiptReader() {
   const [receipt, setReceipt] = useState<ParsedReceipt | null>(null);
   const [linkInput, setLinkInput] = useState("");
@@ -50,6 +63,7 @@ export function ReceiptReader() {
   const [error, setError] = useState<string | null>(null);
   const [copiedField, setCopiedField] = useState<string | null>(null);
   const [showReceiver, setShowReceiver] = useState(false);
+  const [warningToast, setWarningToast] = useState<string | null>(null);
   const [history, setHistory] = useState<HistoryItem[]>([]);
   const [installPrompt, setInstallPrompt] =
     useState<BeforeInstallPromptEvent | null>(null);
@@ -84,6 +98,17 @@ export function ReceiptReader() {
   }, []);
 
   const saveToHistory = useCallback((parsed: ParsedReceipt) => {
+    if (!isPassakyReceiver(parsed)) {
+      const detected = parsed.receiverName
+        ? ` (${parsed.receiverName})`
+        : "";
+      setWarningToast(
+        `O recebedor deste comprovante não é a Passaky Burg${detected}.`
+      );
+    } else {
+      setWarningToast(null);
+    }
+
     setHistory((prev) => {
       const next: HistoryItem[] = [
         {
@@ -357,6 +382,28 @@ export function ReceiptReader() {
 
   return (
     <div className="mx-auto flex w-full max-w-2xl flex-col gap-5 px-4 py-6 pb-16">
+      {/* Yellow Warning Toast */}
+      {warningToast && (
+        <div
+          role="alert"
+          className="fixed top-4 left-4 right-4 z-50 mx-auto flex max-w-md items-start gap-3 rounded-2xl border border-amber-400 bg-amber-50 p-4 text-amber-950 shadow-lg sm:left-auto sm:right-4"
+        >
+          <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0 text-amber-600" />
+          <div className="min-w-0 flex-1">
+            <p className="text-sm font-bold text-amber-900">Atenção</p>
+            <p className="mt-0.5 text-xs text-amber-900/90">{warningToast}</p>
+          </div>
+          <button
+            type="button"
+            onClick={() => setWarningToast(null)}
+            className="shrink-0 rounded-lg p-1 text-amber-700 transition hover:bg-amber-200/60"
+            aria-label="Fechar aviso"
+          >
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+      )}
+
       {/* Header */}
       <header className="flex items-center justify-between gap-3">
         <div className="flex items-center gap-3">
