@@ -1,0 +1,17 @@
+PWA pix pães
+-----
+compartilhar:
+ - faz o upload e seleciona o tipo de documento (comprovante/rel diário/rel semanal)
+ - se comprovante:
+    - extrai pagador, valor e data
+    - avisar se o destino não for passaky
+    - sugere cliente/estabelecimento baseado no cadastro (confirmação do usuário ou seleção manual)
+    - insere no dia com status "aguardando relatório"
+ - se rel diário/semanal (WIP):
+    - procura match para cada pagamentos do dia:
+        - se encontrar, muda status do comprovante para "conferido"
+        - se não encontrar, altera status para "pendente"
+        - verifica pagamentos pendentes de até 2 dias antes
+
+cadastro de estabelecimento + clientes
+1 estabelecimento : n clientes
