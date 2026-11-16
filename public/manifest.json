@@ -1,4 +1,5 @@
 {
+  "id": "/",
   "name": "Pix Pães - Leitor de Comprovantes",
   "short_name": "Pix Pães",
   "description": "Compartilhe uma foto, PDF ou link de comprovante Pix e veja os dados do pagador na hora.",
@@ -14,13 +15,25 @@
       "src": "/icons/icon-192.png",
       "sizes": "192x192",
       "type": "image/png",
-      "purpose": "any maskable"
+      "purpose": "any"
+    },
+    {
+      "src": "/icons/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "maskable"
     },
     {
       "src": "/icons/icon-512.png",
       "sizes": "512x512",
       "type": "image/png",
-      "purpose": "any maskable"
+      "purpose": "any"
+    },
+    {
+      "src": "/icons/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
     }
   ],
   "share_target": {
@@ -36,8 +49,10 @@
           "name": "file",
           "accept": [
             "image/*",
-            "application/pdf",
-            ".pdf"
+            "image/jpeg",
+            "image/png",
+            "image/webp",
+            "application/pdf"
           ]
         }
       ]
