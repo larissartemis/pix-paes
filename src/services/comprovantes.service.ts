@@ -206,7 +206,185 @@ export interface SaveComprovanteResult {
   reconciled: boolean;
 }
 
+export interface SaveBatchResult {
+  insertedCount: number;
+  reconciledCount: number;
+  skippedCount: number;
+  error: string | null;
+}
+
 export const comprovantesService = {
+  async findExistingTransactionIds(
+    transactionIds: string[]
+  ): Promise<{ existingIds: Set<string>; error: string | null }> {
+    const validIds = Array.from(
+      new Set(transactionIds.map((id) => id.trim()).filter(Boolean))
+    );
+
+    if (validIds.length === 0) {
+      return { existingIds: new Set(), error: null };
+    }
+
+    const { data, error } = await supabase
+      .from("comprovantes")
+      .select("id_transacao")
+      .in("id_transacao", validIds);
+
+    if (error) {
+      return { existingIds: new Set(), error: error.message };
+    }
+
+    const existingIds = new Set<string>();
+    for (const row of data ?? []) {
+      if (row.id_transacao) {
+        existingIds.add(row.id_transacao);
+      }
+    }
+
+    return { existingIds, error: null };
+  },
+
+  async saveBatch(items: ComprovanteInsert[]): Promise<SaveBatchResult> {
+    if (items.length === 0) {
+      return {
+        insertedCount: 0,
+        reconciledCount: 0,
+        skippedCount: 0,
+        error: "Nenhum comprovante selecionado para salvar.",
+      };
+    }
+
+    const missingClient = items.some((item) => !item.id_cliente);
+    if (missingClient) {
+      return {
+        insertedCount: 0,
+        reconciledCount: 0,
+        skippedCount: 0,
+        error: "Todos os comprovantes selecionados precisam estar vinculados a um cliente.",
+      };
+    }
+
+    const allIds = items
+      .map((item) => item.id_transacao?.trim() || "")
+      .filter(Boolean);
+
+    const { existingIds, error: checkError } =
+      await this.findExistingTransactionIds(allIds);
+
+    if (checkError) {
+      return {
+        insertedCount: 0,
+        reconciledCount: 0,
+        skippedCount: 0,
+        error: `Erro ao verificar comprovantes existentes: ${checkError}`,
+      };
+    }
+
+    const seenInBatch = new Set<string>();
+    const toInsert: ComprovanteInsert[] = [];
+    let skippedCount = 0;
+
+    for (const item of items) {
+      const txId = item.id_transacao?.trim() || null;
+      if (txId) {
+        if (existingIds.has(txId) || seenInBatch.has(txId)) {
+          skippedCount++;
+          continue;
+        }
+        seenInBatch.add(txId);
+      }
+      toInsert.push({
+        ...item,
+        id_transacao: txId,
+      });
+    }
+
+    if (toInsert.length === 0) {
+      return {
+        insertedCount: 0,
+        reconciledCount: 0,
+        skippedCount,
+        error: null,
+      };
+    }
+
+    const newTxIds = toInsert
+      .map((item) => item.id_transacao)
+      .filter((id): id is string => Boolean(id));
+
+    const relatorioByTxId = new Map<string, string>();
+    if (newTxIds.length > 0) {
+      const { data: relMatches, error: relError } = await supabase
+        .from("relatorios")
+        .select("id, id_transacao")
+        .in("id_transacao", newTxIds);
+
+      if (relError) {
+        return {
+          insertedCount: 0,
+          reconciledCount: 0,
+          skippedCount,
+          error: `Erro ao consultar relatórios: ${relError.message}`,
+        };
+      }
+
+      for (const rel of relMatches ?? []) {
+        if (rel.id_transacao) {
+          relatorioByTxId.set(rel.id_transacao, rel.id);
+        }
+      }
+    }
+
+    const finalPayload = toInsert.map((item) => ({
+      ...item,
+      status:
+        item.id_transacao && relatorioByTxId.has(item.id_transacao)
+          ? ("conferido" as const)
+          : ("aguardando_relatorio" as const),
+    }));
+
+    const { data: insertedRows, error: insertError } = await supabase
+      .from("comprovantes")
+      .insert(finalPayload)
+      .select();
+
+    if (insertError || !insertedRows) {
+      return {
+        insertedCount: 0,
+        reconciledCount: 0,
+        skippedCount,
+        error: insertError?.message || "Erro ao salvar lote de comprovantes.",
+      };
+    }
+
+    let reconciledCount = 0;
+    for (const inserted of insertedRows) {
+      if (!inserted.id_transacao) continue;
+      const relId = relatorioByTxId.get(inserted.id_transacao);
+      if (!relId) continue;
+
+      const { error: updateRelError } = await supabase
+        .from("relatorios")
+        .update({
+          id_comprovante: inserted.id,
+          id_cliente: inserted.id_cliente,
+          conciliado: true,
+        })
+        .eq("id", relId);
+
+      if (!updateRelError) {
+        reconciledCount++;
+      }
+    }
+
+    return {
+      insertedCount: insertedRows.length,
+      reconciledCount,
+      skippedCount,
+      error: null,
+    };
+  },
+
   async save(payload: ComprovanteInsert): Promise<SaveComprovanteResult> {
     if (!payload.id_cliente) {
       return {

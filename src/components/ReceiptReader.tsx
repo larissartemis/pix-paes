@@ -2,6 +2,7 @@
 
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
+import JSZip from "jszip";
 import {
   AlertTriangle,
   Check,
@@ -52,6 +53,54 @@ interface HistoryItem {
   id: string;
   createdAt: number;
   receipt: ParsedReceipt;
+}
+
+interface BulkReceiptItem {
+  id: string;
+  fileName: string;
+  status: "new" | "duplicate_db" | "duplicate_batch" | "error";
+  errorMessage?: string;
+  receipt?: ParsedReceipt;
+  selected: boolean;
+  selectedClienteId: string;
+  suggestionReason?: string;
+  nomeComprovante: string;
+  valor: string;
+  dataTransacao: string;
+  horaTransacao: string;
+  idTransacao: string;
+  bancoPagador: string;
+}
+
+function isZipFile(file: File): boolean {
+  return (
+    file.type === "application/zip" ||
+    file.type === "application/x-zip-compressed" ||
+    file.name.toLowerCase().endsWith(".zip")
+  );
+}
+
+function isPdfFile(file: File): boolean {
+  return (
+    file.type === "application/pdf" ||
+    file.name.toLowerCase().endsWith(".pdf")
+  );
+}
+
+function isImageFile(file: File): boolean {
+  return (
+    file.type.startsWith("image/") ||
+    /\.(png|jpe?g|webp|bmp)$/i.test(file.name)
+  );
+}
+
+function getMimeTypeFromName(name: string): string {
+  const lower = name.toLowerCase();
+  if (lower.endsWith(".pdf")) return "application/pdf";
+  if (lower.endsWith(".png")) return "image/png";
+  if (lower.endsWith(".webp")) return "image/webp";
+  if (lower.endsWith(".bmp")) return "image/bmp";
+  return "image/jpeg";
 }
 
 interface BeforeInstallPromptEvent extends Event {
@@ -107,14 +156,24 @@ export function ReceiptReader() {
   const [draftBancoPagador, setDraftBancoPagador] = useState("");
   const [savingDb, setSavingDb] = useState(false);
   const [saveDbError, setSaveDbError] = useState<string | null>(null);
+  const [isDragging, setIsDragging] = useState(false);
+  const [bulkItems, setBulkItems] = useState<BulkReceiptItem[]>([]);
+  const [bulkSaving, setBulkSaving] = useState(false);
+  const [bulkError, setBulkError] = useState<string | null>(null);
   const [saveModalResult, setSaveModalResult] = useState<{
     open: boolean;
-    clienteNome: string;
-    reconciled: boolean;
+    title: string;
+    description: string;
+    reconciledCount: number;
+    skippedCount: number;
+    isBatch: boolean;
   }>({
     open: false,
-    clienteNome: "",
-    reconciled: false,
+    title: "",
+    description: "",
+    reconciledCount: 0,
+    skippedCount: 0,
+    isBatch: false,
   });
 
   const fileInputRef = useRef<HTMLInputElement | null>(null);
@@ -340,18 +399,247 @@ export function ReceiptReader() {
 
   const handleFileSelected = useCallback(
     async (file: File) => {
-      const isPdf =
-        file.type === "application/pdf" ||
-        file.name.toLowerCase().endsWith(".pdf");
-      if (isPdf) {
+      if (isPdfFile(file)) {
         await processPdfFile(file);
-      } else if (file.type.startsWith("image/") || /\.(png|jpe?g|webp|bmp)$/i.test(file.name)) {
+      } else if (isImageFile(file)) {
         await processImageFile(file);
       } else {
-        setError("Formato não suportado. Envie uma imagem ou PDF.");
+        setError("Formato não suportado. Envie uma imagem, PDF ou .zip.");
       }
     },
     [processImageFile, processPdfFile]
+  );
+
+  const processBulkFiles = useCallback(
+    async (inputFiles: File[]) => {
+      setError(null);
+      setBulkError(null);
+      setReceipt(null);
+      setBulkItems([]);
+      setLoading(true);
+      setProgress(0);
+      setStatusMessage("Preparando arquivos...");
+
+      const extractedFiles: File[] = [];
+
+      try {
+        for (const file of inputFiles) {
+          if (isZipFile(file)) {
+            setStatusMessage(`Extraindo ${file.name}...`);
+            const zip = await JSZip.loadAsync(await file.arrayBuffer());
+            const entries = Object.values(zip.files).filter((entry) => {
+              if (entry.dir) return false;
+              const base = entry.name.split("/").pop() || entry.name;
+              if (base.startsWith(".") || entry.name.includes("__MACOSX")) {
+                return false;
+              }
+              return /\.(pdf|png|jpe?g|webp|bmp)$/i.test(base);
+            });
+
+            for (const entry of entries) {
+              const blob = await entry.async("blob");
+              const baseName = entry.name.split("/").pop() || entry.name;
+              extractedFiles.push(
+                new File([blob], baseName, {
+                  type: getMimeTypeFromName(baseName),
+                })
+              );
+            }
+          } else if (isPdfFile(file) || isImageFile(file)) {
+            extractedFiles.push(file);
+          }
+        }
+
+        if (extractedFiles.length === 0) {
+          setError(
+            "Nenhum arquivo de imagem (PNG/JPG/WEBP) ou PDF válido foi encontrado."
+          );
+          return;
+        }
+
+        // If a .zip had just 1 file inside, use the single-receipt flow
+        if (extractedFiles.length === 1) {
+          setLoading(false);
+          setProgress(null);
+          setStatusMessage("");
+          await handleFileSelected(extractedFiles[0]);
+          return;
+        }
+
+        const hasImages = extractedFiles.some((f) => isImageFile(f));
+        let ocrWorker: Awaited<ReturnType<typeof import("tesseract.js")["createWorker"]>> | null =
+          null;
+
+        if (hasImages) {
+          setStatusMessage("Carregando motor OCR em português...");
+          const { createWorker, PSM } = await import("tesseract.js");
+          ocrWorker = await createWorker("por", 1, {
+            langPath: window.location.origin,
+          });
+          await ocrWorker.setParameters({
+            tessedit_pageseg_mode: PSM.SINGLE_COLUMN,
+          });
+        }
+
+        const rawResults: Array<{
+          fileName: string;
+          receipt?: ParsedReceipt;
+          errorMessage?: string;
+        }> = [];
+
+        try {
+          for (let i = 0; i < extractedFiles.length; i++) {
+            const current = extractedFiles[i];
+            setProgress(Math.round(((i + 1) / extractedFiles.length) * 100));
+            setStatusMessage(
+              `Analisando (${i + 1}/${extractedFiles.length}): ${current.name}`
+            );
+
+            try {
+              if (isPdfFile(current)) {
+                const formData = new FormData();
+                formData.append("file", current);
+                const res = await fetch("/api/parse-pdf", {
+                  method: "POST",
+                  body: formData,
+                });
+                const data = (await res.json()) as {
+                  receipt?: ParsedReceipt;
+                  error?: string;
+                };
+                if (!res.ok || !data.receipt) {
+                  rawResults.push({
+                    fileName: current.name,
+                    errorMessage: data.error || "Erro ao ler PDF.",
+                  });
+                } else {
+                  rawResults.push({
+                    fileName: current.name,
+                    receipt: data.receipt,
+                  });
+                }
+              } else if (ocrWorker) {
+                const {
+                  data: { text },
+                } = await ocrWorker.recognize(current);
+                const parsed = parseReceiptText(text, "image");
+                rawResults.push({
+                  fileName: current.name,
+                  receipt: parsed,
+                });
+              }
+            } catch (err) {
+              rawResults.push({
+                fileName: current.name,
+                errorMessage:
+                  err instanceof Error
+                    ? err.message
+                    : "Falha ao processar arquivo.",
+              });
+            }
+          }
+        } finally {
+          if (ocrWorker) {
+            await ocrWorker.terminate();
+          }
+        }
+
+        const txIds = rawResults
+          .map((r) => r.receipt?.transactionId?.trim() || "")
+          .filter(Boolean);
+
+        const { existingIds, error: checkError } =
+          await comprovantesService.findExistingTransactionIds(txIds);
+
+        if (checkError) {
+          setBulkError(
+            `Aviso ao verificar duplicidades no banco: ${checkError}`
+          );
+        }
+
+        const seenInBatch = new Set<string>();
+        const builtItems: BulkReceiptItem[] = rawResults.map((res, idx) => {
+          const itemId = `${Date.now()}-${idx}`;
+          if (!res.receipt) {
+            return {
+              id: itemId,
+              fileName: res.fileName,
+              status: "error",
+              errorMessage: res.errorMessage || "Falha na leitura.",
+              selected: false,
+              selectedClienteId: "",
+              nomeComprovante: "",
+              valor: "",
+              dataTransacao: "",
+              horaTransacao: "",
+              idTransacao: "",
+              bancoPagador: "",
+            };
+          }
+
+          const defaults = buildComprovanteDefaults(res.receipt);
+          const txId = defaults.id_transacao.trim();
+          let status: BulkReceiptItem["status"] = "new";
+
+          if (txId) {
+            if (existingIds.has(txId)) {
+              status = "duplicate_db";
+            } else if (seenInBatch.has(txId)) {
+              status = "duplicate_batch";
+            } else {
+              seenInBatch.add(txId);
+            }
+          }
+
+          const matched = suggestClientesForReceipt(
+            res.receipt.payerName,
+            clientes
+          );
+
+          return {
+            id: itemId,
+            fileName: res.fileName,
+            status,
+            receipt: res.receipt,
+            selected: status === "new",
+            selectedClienteId: matched[0]?.cliente.id ?? "",
+            suggestionReason: matched[0]?.matchedBy,
+            nomeComprovante: defaults.nome_comprovante,
+            valor: defaults.valor,
+            dataTransacao: defaults.data_transacao,
+            horaTransacao: defaults.hora_transacao,
+            idTransacao: txId,
+            bancoPagador: defaults.banco_pagador,
+          };
+        });
+
+        setBulkItems(builtItems);
+      } catch (err) {
+        console.error("[Bulk] Error:", err);
+        setError("Não foi possível processar os arquivos enviados.");
+      } finally {
+        setLoading(false);
+        setProgress(null);
+        setStatusMessage("");
+      }
+    },
+    [clientes, handleFileSelected]
+  );
+
+  const handleFilesInput = useCallback(
+    async (fileList: FileList | File[]) => {
+      const files = Array.from(fileList);
+      if (files.length === 0) return;
+
+      if (files.length === 1 && !isZipFile(files[0])) {
+        setBulkItems([]);
+        await handleFileSelected(files[0]);
+        return;
+      }
+
+      await processBulkFiles(files);
+    },
+    [handleFileSelected, processBulkFiles]
   );
 
   // Check if opened via Web Share Target
@@ -535,11 +823,13 @@ export function ReceiptReader() {
         <input
           ref={fileInputRef}
           type="file"
-          accept="image/*,application/pdf,.pdf"
+          multiple
+          accept="image/*,application/pdf,.pdf,.zip,application/zip,application/x-zip-compressed"
           className="hidden"
           onChange={(e) => {
-            const file = e.target.files?.[0];
-            if (file) void handleFileSelected(file);
+            if (e.target.files && e.target.files.length > 0) {
+              void handleFilesInput(e.target.files);
+            }
             e.target.value = "";
           }}
         />
@@ -549,10 +839,47 @@ export function ReceiptReader() {
             type="button"
             disabled={loading}
             onClick={() => fileInputRef.current?.click()}
-            className="flex items-center justify-center gap-2.5 rounded-2xl border-2 border-dashed border-blue-300 bg-blue-50/50 px-4 py-4 text-sm font-semibold text-blue-900 transition hover:border-blue-500 hover:bg-blue-50 disabled:opacity-50"
+            onDragOver={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              if (!loading) setIsDragging(true);
+            }}
+            onDragEnter={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              if (!loading) setIsDragging(true);
+            }}
+            onDragLeave={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              setIsDragging(false);
+            }}
+            onDrop={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              setIsDragging(false);
+              if (loading) return;
+              if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+                void handleFilesInput(e.dataTransfer.files);
+              }
+            }}
+            className={`flex flex-col items-center justify-center gap-1 rounded-2xl border-2 border-dashed px-4 py-5 text-sm font-semibold transition disabled:opacity-50 ${
+              isDragging
+                ? "border-primary bg-primary/10 text-primary"
+                : "border-blue-300 bg-blue-50/50 text-blue-900 hover:border-blue-500 hover:bg-blue-50"
+            }`}
           >
-            <Upload className="h-5 w-5 text-blue-800" />
-            <span>Enviar Foto ou PDF</span>
+            <div className="flex items-center gap-2">
+              <Upload className="h-5 w-5 text-blue-800" />
+              <span>
+                {isDragging
+                  ? "Solte os arquivos aqui..."
+                  : "Solte ou clique para enviar Foto, PDF ou .zip"}
+              </span>
+            </div>
+            <span className="text-xs font-normal text-muted-foreground">
+              Suporta envio único ou em lote (várias imagens/PDFs ou arquivo .zip)
+            </span>
           </button>
 
           <form onSubmit={handleLinkSubmit} className="flex flex-col gap-2.5">
@@ -957,8 +1284,11 @@ export function ReceiptReader() {
                   "cliente selecionado";
                 setSaveModalResult({
                   open: true,
-                  clienteNome,
-                  reconciled,
+                  title: "Comprovante salvo com sucesso!",
+                  description: `Vinculado ao cliente ${clienteNome}.`,
+                  reconciledCount: reconciled ? 1 : 0,
+                  skippedCount: 0,
+                  isBatch: false,
                 });
               }}
             >
@@ -978,8 +1308,274 @@ export function ReceiptReader() {
         </Card>
       )}
 
+      {/* Bulk Upload Review */}
+      {bulkItems.length > 0 && (
+        <Card className="border-primary/20">
+          <CardHeader>
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <CardTitle className="text-base">
+                Análise em lote ({bulkItems.length} arquivos)
+              </CardTitle>
+              <div className="flex flex-wrap gap-1.5">
+                <Badge variant="success">
+                  {bulkItems.filter((i) => i.status === "new").length} novos
+                </Badge>
+                {bulkItems.some(
+                  (i) =>
+                    i.status === "duplicate_db" || i.status === "duplicate_batch"
+                ) && (
+                  <Badge variant="secondary">
+                    {
+                      bulkItems.filter(
+                        (i) =>
+                          i.status === "duplicate_db" ||
+                          i.status === "duplicate_batch"
+                      ).length
+                    }{" "}
+                    já cadastrados
+                  </Badge>
+                )}
+                {bulkItems.some((i) => i.status === "error") && (
+                  <Badge variant="warning">
+                    {bulkItems.filter((i) => i.status === "error").length} com
+                    erro
+                  </Badge>
+                )}
+              </div>
+            </div>
+            <CardDescription>
+              Comprovantes cujo ID da transação já existe no banco foram
+              ignorados automaticamente. Confirme o cliente de cada novo
+              comprovante para salvar.
+            </CardDescription>
+          </CardHeader>
+
+          <CardContent className="space-y-4">
+            {bulkItems.filter((i) => i.status === "new").length === 0 ? (
+              <div className="rounded-xl border border-border bg-secondary/40 p-4 text-center text-sm text-muted-foreground">
+                Nenhum comprovante novo para adicionar neste lote (todos já
+                estavam cadastrados ou falharam na leitura).
+              </div>
+            ) : (
+              <div className="space-y-3">
+                {bulkItems
+                  .filter((i) => i.status === "new")
+                  .map((item) => (
+                    <div
+                      key={item.id}
+                      className="space-y-2.5 rounded-xl border border-border bg-card p-3.5"
+                    >
+                      <div className="flex items-start justify-between gap-2">
+                        <label className="flex cursor-pointer items-start gap-2.5">
+                          <input
+                            type="checkbox"
+                            checked={item.selected}
+                            onChange={(e) =>
+                              setBulkItems((prev) =>
+                                prev.map((row) =>
+                                  row.id === item.id
+                                    ? { ...row, selected: e.target.checked }
+                                    : row
+                                )
+                              )
+                            }
+                            className="mt-1 h-4 w-4 rounded border-input accent-primary"
+                          />
+                          <div className="min-w-0">
+                            <p className="text-sm font-semibold text-foreground">
+                              {item.nomeComprovante || "Pagador não identificado"}
+                            </p>
+                            <p className="truncate text-xs text-muted-foreground">
+                              {item.fileName}
+                              {item.dataTransacao
+                                ? ` • ${item.dataTransacao}`
+                                : ""}
+                              {item.horaTransacao
+                                ? ` ${item.horaTransacao}`
+                                : ""}
+                            </p>
+                            {item.idTransacao && (
+                              <p className="truncate font-mono text-[11px] text-muted-foreground">
+                                {item.idTransacao}
+                              </p>
+                            )}
+                          </div>
+                        </label>
+
+                        <span className="shrink-0 text-sm font-bold text-primary">
+                          {item.valor ? `R$ ${item.valor}` : "Sem valor"}
+                        </span>
+                      </div>
+
+                      {item.selected && (
+                        <div className="space-y-1.5 pt-1">
+                          <div className="flex flex-wrap items-center justify-between gap-1">
+                            <Label
+                              htmlFor={`bulk-client-${item.id}`}
+                              className="text-xs"
+                            >
+                              Cliente vinculado *
+                            </Label>
+                            {item.suggestionReason ? (
+                              <Badge variant="success" className="text-[10px]">
+                                Sugerido ({item.suggestionReason})
+                              </Badge>
+                            ) : (
+                              <Badge variant="warning" className="text-[10px]">
+                                Selecione o cliente
+                              </Badge>
+                            )}
+                          </div>
+                          <select
+                            id={`bulk-client-${item.id}`}
+                            value={item.selectedClienteId}
+                            onChange={(e) =>
+                              setBulkItems((prev) =>
+                                prev.map((row) =>
+                                  row.id === item.id
+                                    ? {
+                                        ...row,
+                                        selectedClienteId: e.target.value,
+                                      }
+                                    : row
+                                )
+                              )
+                            }
+                            className="flex h-9 w-full rounded-xl border border-input bg-background px-3 py-1.5 text-xs text-foreground focus-visible:border-ring focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/20"
+                          >
+                            <option value="">Selecione um cliente...</option>
+                            {clientes.map((c) => (
+                              <option key={c.id} value={c.id}>
+                                {c.nome_loja}
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+                      )}
+                    </div>
+                  ))}
+              </div>
+            )}
+
+            {bulkItems.some((i) => i.status !== "new") && (
+              <div className="space-y-1.5 rounded-xl border border-border bg-secondary/40 p-3 text-xs text-muted-foreground">
+                <p className="font-semibold text-foreground">
+                  Ignorados automaticamente:
+                </p>
+                {bulkItems
+                  .filter((i) => i.status !== "new")
+                  .map((item) => (
+                    <div
+                      key={item.id}
+                      className="flex items-center justify-between gap-2"
+                    >
+                      <span className="truncate">{item.fileName}</span>
+                      <span className="shrink-0">
+                        {item.status === "duplicate_db"
+                          ? "Já cadastrado no banco"
+                          : item.status === "duplicate_batch"
+                            ? "Duplicado no lote"
+                            : item.errorMessage || "Erro na leitura"}
+                      </span>
+                    </div>
+                  ))}
+              </div>
+            )}
+
+            {bulkError && (
+              <div className="rounded-xl border border-red-200 bg-red-50 px-3 py-2.5 text-sm text-red-700">
+                {bulkError}
+              </div>
+            )}
+
+            {bulkItems.some((i) => i.status === "new") && (
+              <Button
+                type="button"
+                disabled={
+                  bulkSaving ||
+                  bulkItems.filter((i) => i.status === "new" && i.selected)
+                    .length === 0 ||
+                  bulkItems.some(
+                    (i) =>
+                      i.status === "new" &&
+                      i.selected &&
+                      (!i.selectedClienteId ||
+                        !i.nomeComprovante.trim() ||
+                        !i.valor ||
+                        !i.dataTransacao)
+                  )
+                }
+                className="w-full"
+                onClick={async () => {
+                  setBulkError(null);
+                  const selectedNew = bulkItems.filter(
+                    (i) => i.status === "new" && i.selected
+                  );
+                  if (selectedNew.length === 0) return;
+
+                  const payload = selectedNew.map((item) => ({
+                    id_cliente: item.selectedClienteId,
+                    nome_comprovante: item.nomeComprovante.trim(),
+                    valor: Number(Number(item.valor).toFixed(2)),
+                    data_transacao: item.dataTransacao,
+                    hora_transacao: item.horaTransacao || null,
+                    id_transacao: item.idTransacao.trim() || null,
+                    banco_pagador: item.bancoPagador.trim() || null,
+                    nome_recebedor: item.receipt?.receiverName || null,
+                    cpf_cnpj_pagador: item.receipt?.payerDocument || null,
+                    status: "aguardando_relatorio" as const,
+                    confianca_ocr: item.receipt?.confidence || null,
+                  }));
+
+                  setBulkSaving(true);
+                  const result = await comprovantesService.saveBatch(payload);
+                  setBulkSaving(false);
+
+                  if (result.error) {
+                    setBulkError(result.error);
+                    return;
+                  }
+
+                  const ignoredBefore = bulkItems.filter(
+                    (i) =>
+                      i.status === "duplicate_db" ||
+                      i.status === "duplicate_batch"
+                  ).length;
+
+                  setSaveModalResult({
+                    open: true,
+                    title: `${result.insertedCount} comprovante(s) salvo(s) com sucesso!`,
+                    description: "Lote processado e vinculado aos clientes.",
+                    reconciledCount: result.reconciledCount,
+                    skippedCount: ignoredBefore + result.skippedCount,
+                    isBatch: true,
+                  });
+                }}
+              >
+                {bulkSaving ? (
+                  <>
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                    Salvando lote...
+                  </>
+                ) : (
+                  <>
+                    <CheckCircle2 className="h-4 w-4" />
+                    Confirmar e salvar{" "}
+                    {
+                      bulkItems.filter((i) => i.status === "new" && i.selected)
+                        .length
+                    }{" "}
+                    novo(s)
+                  </>
+                )}
+              </Button>
+            )}
+          </CardContent>
+        </Card>
+      )}
+
       {/* Empty State */}
-      {!receipt && !loading && (
+      {!receipt && bulkItems.length === 0 && !loading && (
         <section className="rounded-3xl border border-slate-200 bg-white p-8 text-center shadow-sm">
           <Sparkles className="mx-auto h-9 w-9 text-blue-800" />
           <h2 className="mt-3 text-base font-semibold text-slate-800">
@@ -1057,18 +1653,10 @@ export function ReceiptReader() {
       )}
       <ConfirmModal
         open={saveModalResult.open}
-        title="Comprovante salvo com sucesso!"
-        description={
-          <>
-            Vinculado ao cliente{" "}
-            <span className="font-semibold text-foreground">
-              {saveModalResult.clienteNome}
-            </span>
-            .
-          </>
-        }
+        title={saveModalResult.title}
+        description={saveModalResult.description}
         icon={
-          <div className="flex h-11 w-11 items-center justify-center rounded-xl bg-emerald-50 text-emerald-700 border border-emerald-200">
+          <div className="flex h-11 w-11 items-center justify-center rounded-xl border border-emerald-200 bg-emerald-50 text-emerald-700">
             <CheckCircle2 className="h-6 w-6" />
           </div>
         }
@@ -1076,10 +1664,15 @@ export function ReceiptReader() {
         onConfirm={() => {
           setSaveModalResult({
             open: false,
-            clienteNome: "",
-            reconciled: false,
+            title: "",
+            description: "",
+            reconciledCount: 0,
+            skippedCount: 0,
+            isBatch: false,
           });
           setReceipt(null);
+          setBulkItems([]);
+          setBulkError(null);
           setLinkInput("");
           setError(null);
           setWarningToast(null);
@@ -1100,27 +1693,42 @@ export function ReceiptReader() {
         onCancel={() => {
           setSaveModalResult({
             open: false,
-            clienteNome: "",
-            reconciled: false,
+            title: "",
+            description: "",
+            reconciledCount: 0,
+            skippedCount: 0,
+            isBatch: false,
           });
           router.push("/");
         }}
       >
-        <div className="rounded-xl border border-border bg-secondary/40 p-3.5 text-sm">
+        <div className="space-y-2 rounded-xl border border-border bg-secondary/40 p-3.5 text-sm">
           <div className="flex items-center justify-between gap-2">
             <span className="font-medium text-muted-foreground">
               Conciliação:
             </span>
-            {saveModalResult.reconciled ? (
-              <Badge variant="success">Conciliado automaticamente</Badge>
+            {saveModalResult.reconciledCount > 0 ? (
+              <Badge variant="success">
+                {saveModalResult.isBatch
+                  ? `${saveModalResult.reconciledCount} conciliado(s)`
+                  : "Conciliado automaticamente"}
+              </Badge>
             ) : (
               <Badge variant="warning">Aguardando relatório</Badge>
             )}
           </div>
-          <p className="mt-2 text-xs text-muted-foreground">
-            {saveModalResult.reconciled
-              ? "Encontramos um lançamento no relatório com o mesmo ID da transação e já marcamos ambos como conferidos."
-              : "Ainda não há um lançamento no relatório com este ID da transação. Ele ficará aguardando conferência."}
+          {saveModalResult.isBatch && saveModalResult.skippedCount > 0 && (
+            <div className="flex items-center justify-between gap-2 text-xs text-muted-foreground">
+              <span>Ignorados (já cadastrados):</span>
+              <span className="font-semibold text-foreground">
+                {saveModalResult.skippedCount}
+              </span>
+            </div>
+          )}
+          <p className="text-xs text-muted-foreground">
+            {saveModalResult.reconciledCount > 0
+              ? "Encontramos lançamento(s) no relatório com o mesmo ID da transação e já marcamos como conferidos."
+              : "Ainda não há lançamento no relatório com este ID da transação. Ficará aguardando conferência."}
           </p>
         </div>
       </ConfirmModal>
