@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useCallback, useEffect, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
 import {
   AlertTriangle,
   Check,
@@ -31,6 +32,7 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
+import { ConfirmModal } from "@/components/ui/confirm-modal";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { consumeSharedPayload } from "@/lib/share-db";
@@ -76,6 +78,7 @@ function isPassakyReceiver(parsed: ParsedReceipt): boolean {
 }
 
 export function ReceiptReader() {
+  const router = useRouter();
   const [receipt, setReceipt] = useState<ParsedReceipt | null>(null);
   const [linkInput, setLinkInput] = useState("");
   const [loading, setLoading] = useState(false);
@@ -103,8 +106,16 @@ export function ReceiptReader() {
   const [draftIdTransacao, setDraftIdTransacao] = useState("");
   const [draftBancoPagador, setDraftBancoPagador] = useState("");
   const [savingDb, setSavingDb] = useState(false);
-  const [saveDbSuccess, setSaveDbSuccess] = useState<string | null>(null);
   const [saveDbError, setSaveDbError] = useState<string | null>(null);
+  const [saveModalResult, setSaveModalResult] = useState<{
+    open: boolean;
+    clienteNome: string;
+    reconciled: boolean;
+  }>({
+    open: false,
+    clienteNome: "",
+    reconciled: false,
+  });
 
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
@@ -131,7 +142,6 @@ export function ReceiptReader() {
     setDraftHora(defaults.hora_transacao);
     setDraftIdTransacao(defaults.id_transacao);
     setDraftBancoPagador(defaults.banco_pagador);
-    setSaveDbSuccess(null);
     setSaveDbError(null);
     setClientSearch("");
   }, [receipt]);
@@ -656,11 +666,22 @@ export function ReceiptReader() {
             </div>
           </div>
 
-          {/* Payer Details Grid: Valor, Data e Hora, Banco */}
-          <div className="grid grid-cols-1 gap-3 p-5 sm:grid-cols-3">
+          {/* Payer Details Grid: Valor, Data e Hora, Banco, ID Transação */}
+          <div className="grid grid-cols-1 gap-3 p-5 sm:grid-cols-2">
             <DetailBox label="Valor" value={receipt.amount} />
             <DetailBox label="Data e Hora" value={receipt.dateTime} />
             <DetailBox label="Banco / Instituição" value={receipt.payerBank} />
+            <DetailBox
+              label="ID da Transação (E2E)"
+              value={receipt.transactionId}
+              mono
+              onCopy={
+                receipt.transactionId
+                  ? () => void handleCopy("transactionId", receipt.transactionId || "")
+                  : undefined
+              }
+              copied={copiedField === "transactionId"}
+            />
           </div>
 
           {/* Collapsible Receiver Details */}
@@ -880,20 +901,12 @@ export function ReceiptReader() {
               </div>
             )}
 
-            {saveDbSuccess && (
-              <div className="flex items-center gap-2 rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2.5 text-sm text-emerald-800">
-                <CheckCircle2 className="h-4 w-4 shrink-0" />
-                <span>{saveDbSuccess}</span>
-              </div>
-            )}
-
             <Button
               type="button"
               disabled={savingDb || !selectedClienteId}
               className="w-full"
               onClick={async () => {
                 setSaveDbError(null);
-                setSaveDbSuccess(null);
 
                 const nomeComprovante = draftNomeComprovante.trim();
                 const valorNum = Number(draftValor.replace(",", "."));
@@ -916,19 +929,20 @@ export function ReceiptReader() {
                 }
 
                 setSavingDb(true);
-                const { data, error: insertError } = await comprovantesService.save({
-                  id_cliente: selectedClienteId,
-                  nome_comprovante: nomeComprovante,
-                  valor: Number(valorNum.toFixed(2)),
-                  data_transacao: draftData,
-                  hora_transacao: draftHora || null,
-                  id_transacao: draftIdTransacao.trim() || null,
-                  banco_pagador: draftBancoPagador.trim() || null,
-                  nome_recebedor: receipt.receiverName || null,
-                  cpf_cnpj_pagador: receipt.payerDocument || null,
-                  status: "aguardando_relatorio",
-                  confianca_ocr: receipt.confidence || null,
-                });
+                const { data, error: insertError, reconciled } =
+                  await comprovantesService.save({
+                    id_cliente: selectedClienteId,
+                    nome_comprovante: nomeComprovante,
+                    valor: Number(valorNum.toFixed(2)),
+                    data_transacao: draftData,
+                    hora_transacao: draftHora || null,
+                    id_transacao: draftIdTransacao.trim() || null,
+                    banco_pagador: draftBancoPagador.trim() || null,
+                    nome_recebedor: receipt.receiverName || null,
+                    cpf_cnpj_pagador: receipt.payerDocument || null,
+                    status: "aguardando_relatorio",
+                    confianca_ocr: receipt.confidence || null,
+                  });
                 setSavingDb(false);
 
                 if (insertError || !data) {
@@ -941,9 +955,11 @@ export function ReceiptReader() {
                 const clienteNome =
                   clientes.find((c) => c.id === selectedClienteId)?.nome_loja ||
                   "cliente selecionado";
-                setSaveDbSuccess(
-                  `Comprovante salvo e vinculado a "${clienteNome}"!`
-                );
+                setSaveModalResult({
+                  open: true,
+                  clienteNome,
+                  reconciled,
+                });
               }}
             >
               {savingDb ? (
@@ -1039,6 +1055,75 @@ export function ReceiptReader() {
           </div>
         </div>
       )}
+      <ConfirmModal
+        open={saveModalResult.open}
+        title="Comprovante salvo com sucesso!"
+        description={
+          <>
+            Vinculado ao cliente{" "}
+            <span className="font-semibold text-foreground">
+              {saveModalResult.clienteNome}
+            </span>
+            .
+          </>
+        }
+        icon={
+          <div className="flex h-11 w-11 items-center justify-center rounded-xl bg-emerald-50 text-emerald-700 border border-emerald-200">
+            <CheckCircle2 className="h-6 w-6" />
+          </div>
+        }
+        confirmLabel="Adicionar outro comprovante"
+        onConfirm={() => {
+          setSaveModalResult({
+            open: false,
+            clienteNome: "",
+            reconciled: false,
+          });
+          setReceipt(null);
+          setLinkInput("");
+          setError(null);
+          setWarningToast(null);
+          setSaveDbError(null);
+          setSelectedClienteId("");
+          setClientSearch("");
+          setDraftNomeComprovante("");
+          setDraftValor("");
+          setDraftData("");
+          setDraftHora("");
+          setDraftIdTransacao("");
+          setDraftBancoPagador("");
+          if (fileInputRef.current) {
+            fileInputRef.current.value = "";
+          }
+        }}
+        cancelLabel="Voltar para o início"
+        onCancel={() => {
+          setSaveModalResult({
+            open: false,
+            clienteNome: "",
+            reconciled: false,
+          });
+          router.push("/");
+        }}
+      >
+        <div className="rounded-xl border border-border bg-secondary/40 p-3.5 text-sm">
+          <div className="flex items-center justify-between gap-2">
+            <span className="font-medium text-muted-foreground">
+              Conciliação:
+            </span>
+            {saveModalResult.reconciled ? (
+              <Badge variant="success">Conciliado automaticamente</Badge>
+            ) : (
+              <Badge variant="warning">Aguardando relatório</Badge>
+            )}
+          </div>
+          <p className="mt-2 text-xs text-muted-foreground">
+            {saveModalResult.reconciled
+              ? "Encontramos um lançamento no relatório com o mesmo ID da transação e já marcamos ambos como conferidos."
+              : "Ainda não há um lançamento no relatório com este ID da transação. Ele ficará aguardando conferência."}
+          </p>
+        </div>
+      </ConfirmModal>
     </div>
   );
 }

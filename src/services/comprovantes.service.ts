@@ -69,6 +69,28 @@ export interface ClientSuggestion {
   matchedBy: string;
 }
 
+const COMMON_SURNAMES = new Set([
+  "dos",
+  "das",
+  "silva",
+  "santos",
+  "souza",
+  "oliveira",
+  "pereira",
+  "ferreira",
+  "almeida",
+  "costa",
+  "rodrigues",
+  "alves",
+  "lima",
+  "gomes",
+  "maria",
+  "jose",
+  "joao",
+  "ana",
+  "ltda",
+]);
+
 /**
  * Ranqueia clientes ativos que combinam com o nome do pagador extraído do comprovante.
  */
@@ -83,6 +105,9 @@ export function suggestClientesForReceipt(
   if (!normPayer) return [];
 
   const payerWords = normPayer.split(" ").filter((w) => w.length >= 3);
+  const distinctivePayerWords = payerWords.filter(
+    (w) => !COMMON_SURNAMES.has(w)
+  );
   const suggestions: ClientSuggestion[] = [];
 
   for (const cliente of activeClientes) {
@@ -128,13 +153,15 @@ export function suggestClientesForReceipt(
         continue;
       }
 
-      if (payerWords.length >= 2) {
+      const wordsToMatch =
+        distinctivePayerWords.length >= 1 ? distinctivePayerWords : payerWords;
+      if (wordsToMatch.length >= 2) {
         const candidateWords = normCandidate
           .split(" ")
           .filter((w) => w.length >= 3);
-        const common = payerWords.filter((w) => candidateWords.includes(w));
+        const common = wordsToMatch.filter((w) => candidateWords.includes(w));
         if (common.length >= 2) {
-          const score = candidate.weight + common.length * 5;
+          const score = candidate.weight - 15 + common.length * 5;
           if (score > bestScore) {
             bestScore = score;
             matchedBy = `${candidate.source}: ${candidate.name}`;
@@ -148,7 +175,12 @@ export function suggestClientesForReceipt(
     }
   }
 
-  return suggestions.sort((a, b) => b.score - a.score).slice(0, 5);
+  const sorted = suggestions.sort((a, b) => b.score - a.score);
+  if (sorted.length > 0 && sorted[0].score >= 120) {
+    return sorted.filter((item) => item.score >= 100).slice(0, 5);
+  }
+
+  return sorted.slice(0, 5);
 }
 
 export function buildComprovanteDefaults(parsed: ParsedReceipt) {
@@ -168,14 +200,23 @@ export function buildComprovanteDefaults(parsed: ParsedReceipt) {
   };
 }
 
+export interface SaveComprovanteResult {
+  data: ComprovanteRow | null;
+  error: string | null;
+  reconciled: boolean;
+}
+
 export const comprovantesService = {
-  async save(payload: ComprovanteInsert) {
+  async save(payload: ComprovanteInsert): Promise<SaveComprovanteResult> {
     if (!payload.id_cliente) {
       return {
         data: null,
         error: "É obrigatório vincular um cliente antes de salvar o comprovante.",
+        reconciled: false,
       };
     }
+
+    let matchingRelatorioId: string | null = null;
 
     if (payload.id_transacao) {
       const { data: existing, error: checkError } = await supabase
@@ -185,27 +226,72 @@ export const comprovantesService = {
         .maybeSingle();
 
       if (checkError) {
-        return { data: null, error: checkError.message };
+        return { data: null, error: checkError.message, reconciled: false };
       }
 
       if (existing) {
         return {
           data: null,
           error: "Este comprovante (ID da transação) já foi salvo anteriormente.",
+          reconciled: false,
         };
+      }
+
+      const { data: relatorioMatch, error: relError } = await supabase
+        .from("relatorios")
+        .select("id")
+        .eq("id_transacao", payload.id_transacao)
+        .maybeSingle();
+
+      if (relError) {
+        return { data: null, error: relError.message, reconciled: false };
+      }
+
+      if (relatorioMatch) {
+        matchingRelatorioId = relatorioMatch.id;
       }
     }
 
+    const insertPayload: ComprovanteInsert = {
+      ...payload,
+      status: matchingRelatorioId ? "conferido" : payload.status ?? "aguardando_relatorio",
+    };
+
     const { data, error } = await supabase
       .from("comprovantes")
-      .insert(payload)
+      .insert(insertPayload)
       .select()
       .single();
 
-    if (error) {
-      return { data: null, error: error.message };
+    if (error || !data) {
+      return {
+        data: null,
+        error: error?.message || "Não foi possível salvar o comprovante.",
+        reconciled: false,
+      };
     }
 
-    return { data, error: null };
+    if (matchingRelatorioId) {
+      const { error: updateRelError } = await supabase
+        .from("relatorios")
+        .update({
+          id_comprovante: data.id,
+          id_cliente: payload.id_cliente,
+          conciliado: true,
+        })
+        .eq("id", matchingRelatorioId);
+
+      if (updateRelError) {
+        return {
+          data,
+          error: `Comprovante salvo, mas não foi possível atualizar o relatório: ${updateRelError.message}`,
+          reconciled: false,
+        };
+      }
+
+      return { data, error: null, reconciled: true };
+    }
+
+    return { data, error: null, reconciled: false };
   },
 };
