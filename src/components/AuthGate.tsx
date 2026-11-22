@@ -4,7 +4,7 @@ import React, { useEffect, useState } from "react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import type { Session } from "@supabase/supabase-js";
-import { Home, Loader2, LogOut, ScanText } from "lucide-react";
+import { FileSpreadsheet, Home, Loader2, LogOut, ScanText } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { authService } from "@/services/auth.service";
@@ -67,6 +67,7 @@ export function AuthGate({ children }: AuthGateProps) {
   const navItems = [
     { href: "/", label: "Início", icon: Home },
     { href: "/leitor", label: "Leitor", icon: ScanText },
+    { href: "/relatorios", label: "Relatórios", icon: FileSpreadsheet },
   ];
 
   return (
