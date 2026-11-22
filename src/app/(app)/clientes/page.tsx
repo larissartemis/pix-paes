@@ -159,7 +159,7 @@ export default function ClientesPage() {
     setLoading(false);
 
     if (listError) {
-      setError("Não foi possível carregar os clientes.");
+      setError(`Não foi possível carregar os clientes: ${listError.message}`);
       return;
     }
 
