@@ -103,13 +103,7 @@ export function AuthGate({ children }: AuthGateProps) {
     { href: "/", label: "Início", icon: Home },
     { href: "/clientes", label: "Clientes", icon: Users },
     { href: "/relatorios", label: "Relatórios", icon: FileSpreadsheet },
-    {
-      href: "/conferencia",
-      label: "Conferência",
-      icon: CheckSquare,
-      disabled: true,
-      badge: "Em breve",
-    },
+    { href: "/conferencia", label: "Conferência", icon: CheckSquare },
     { href: "/leitor", label: "Leitor", icon: ScanText },
   ];
 
@@ -129,7 +123,7 @@ export function AuthGate({ children }: AuthGateProps) {
         href: "/conferencia",
         label: "Conferência",
         icon: CheckSquare,
-        disabled: true,
+        disabled: false,
       },
     ],
   };
