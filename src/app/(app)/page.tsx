@@ -3,7 +3,7 @@
 import React, { useEffect } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { ArrowRight, FileSpreadsheet, ScanText, Users } from "lucide-react";
+import { ArrowRight, CheckSquare, FileSpreadsheet, Users } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -32,58 +32,35 @@ export default function HomePage() {
           Painel Pix Pães
         </h1>
         <p className="text-sm text-muted-foreground">
-          Controle de comprovantes Pix, clientes e conferência de relatórios.
+          Controle de clientes, relatórios diários e conferência de PIX.
         </p>
       </div>
 
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-        <Card className="flex flex-col justify-between border-primary/20">
+        {/* Card 1: Clientes (Em desenvolvimento) */}
+        <Card className="flex flex-col justify-between opacity-85">
           <CardHeader>
             <div className="mb-2 flex items-center justify-between">
-              <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-primary/10 text-primary">
-                <ScanText className="h-5 w-5" />
-              </div>
-              <Badge variant="success">Ativo</Badge>
-            </div>
-            <CardTitle>Leitor de Comprovantes</CardTitle>
-            <CardDescription>
-              Leia comprovantes por imagem, PDF, texto ou link compartilhado.
-            </CardDescription>
-          </CardHeader>
-          <CardContent>
-            <Link href="/leitor" className="block">
-              <Button className="w-full">
-                Abrir leitor
-                <ArrowRight className="h-4 w-4" />
-              </Button>
-            </Link>
-          </CardContent>
-        </Card>
-
-        <Card className="flex flex-col justify-between border-primary/20">
-          <CardHeader>
-            <div className="mb-2 flex items-center justify-between">
-              <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-primary/10 text-primary">
+              <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-secondary text-muted-foreground">
                 <Users className="h-5 w-5" />
               </div>
-              <Badge variant="success">Ativo</Badge>
+              <Badge variant="secondary">Em breve</Badge>
             </div>
             <CardTitle>Clientes</CardTitle>
             <CardDescription>
-              Cadastre lojas, rotas e os nomes que aparecem nos comprovantes.
+              Cadastre lojas, rotas e os nomes que aparecem nos comprovantes e
+              relatórios.
             </CardDescription>
           </CardHeader>
           <CardContent>
-            <Link href="/clientes" className="block">
-              <Button variant="outline" className="w-full">
-                Gerenciar clientes
-                <ArrowRight className="h-4 w-4" />
-              </Button>
-            </Link>
+            <Button variant="outline" disabled className="w-full">
+              Em desenvolvimento
+            </Button>
           </CardContent>
         </Card>
 
-        <Card className="flex flex-col justify-between border-primary/20 sm:col-span-2 lg:col-span-1">
+        {/* Card 2: Relatórios (Ativo) */}
+        <Card className="flex flex-col justify-between border-primary/20">
           <CardHeader>
             <div className="mb-2 flex items-center justify-between">
               <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-primary/10 text-primary">
@@ -91,9 +68,10 @@ export default function HomePage() {
               </div>
               <Badge variant="success">Ativo</Badge>
             </div>
-            <CardTitle>Relatórios &amp; Conferência</CardTitle>
+            <CardTitle>Relatórios</CardTitle>
             <CardDescription>
-              Faça upload do relatório diário em PDF e extraia os PIX recebidos.
+              Faça upload do relatório diário em PDF e alimente a tabela de
+              relatórios.
             </CardDescription>
           </CardHeader>
           <CardContent>
@@ -103,6 +81,28 @@ export default function HomePage() {
                 <ArrowRight className="h-4 w-4" />
               </Button>
             </Link>
+          </CardContent>
+        </Card>
+
+        {/* Card 3: Conferência (Em desenvolvimento) */}
+        <Card className="flex flex-col justify-between opacity-85 sm:col-span-2 lg:col-span-1">
+          <CardHeader>
+            <div className="mb-2 flex items-center justify-between">
+              <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-secondary text-muted-foreground">
+                <CheckSquare className="h-5 w-5" />
+              </div>
+              <Badge variant="secondary">Em breve</Badge>
+            </div>
+            <CardTitle>Conferência</CardTitle>
+            <CardDescription>
+              Cruze os comprovantes enviados pelos clientes com os PIX recebidos
+              no relatório.
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <Button variant="outline" disabled className="w-full">
+              Em desenvolvimento
+            </Button>
           </CardContent>
         </Card>
       </div>
