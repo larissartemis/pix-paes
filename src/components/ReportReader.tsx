@@ -7,12 +7,10 @@ import {
   Check,
   CheckCircle2,
   Copy,
-  Database,
   FileSpreadsheet,
   FileUp,
   Loader2,
   Search,
-  Trash2,
   User,
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
@@ -86,11 +84,49 @@ export function ReportReader() {
       setTotalPages(data.totalPages ?? null);
       setSearchQuery("");
 
-      // Check which transactions from this PDF already exist in Supabase
-      const ids = parsedReport.itens.map((i) => i.idTransacao).filter(Boolean);
-      const { existingIds } =
-        await relatoriosService.findExistingTransactionIds(ids);
-      setSavedIds(existingIds);
+      // Salva automaticamente no banco após a leitura do PDF
+      if (parsedReport.itens.length > 0) {
+        setSaving(true);
+        const result = await relatoriosService.saveReportItems(
+          parsedReport.itens,
+          parsedReport.dataIso
+        );
+        setSaving(false);
+
+        if (result.error) {
+          setError(result.error);
+          return;
+        }
+
+        setSavedIds(new Set(result.savedIdsTransacao));
+
+        if (result.insertedCount > 0 && result.skippedCount > 0) {
+          setSaveFeedback({
+            type: "success",
+            message: `Relatório salvo automaticamente! ${result.insertedCount} ${
+              result.insertedCount === 1
+                ? "novo pagamento registrado"
+                : "novos pagamentos registrados"
+            } (${result.skippedCount} já ${
+              result.skippedCount === 1 ? "estava salvo" : "estavam salvos"
+            }).`,
+          });
+        } else if (result.insertedCount > 0) {
+          setSaveFeedback({
+            type: "success",
+            message: `Relatório salvo automaticamente! ${result.insertedCount} ${
+              result.insertedCount === 1
+                ? "pagamento registrado"
+                : "pagamentos registrados"
+            } com sucesso.`,
+          });
+        } else {
+          setSaveFeedback({
+            type: "info",
+            message: `Todos os ${result.skippedCount} pagamentos deste relatório já estavam salvos no sistema.`,
+          });
+        }
+      }
     } catch (err) {
       setReport(null);
       setTotalPages(null);
@@ -102,65 +138,9 @@ export function ReportReader() {
       );
     } finally {
       setLoading(false);
-    }
-  }, []);
-
-  const handleSaveToSupabase = async () => {
-    if (!report || report.itens.length === 0) return;
-
-    setError(null);
-    setSaveFeedback(null);
-    setSaving(true);
-
-    try {
-      const result = await relatoriosService.saveReportItems(
-        report.itens,
-        report.dataIso
-      );
-
-      if (result.error) {
-        setError(result.error);
-        return;
-      }
-
-      setSavedIds(new Set(result.savedIdsTransacao));
-
-      if (result.insertedCount > 0 && result.skippedCount > 0) {
-        setSaveFeedback({
-          type: "success",
-          message: `${result.insertedCount} ${
-            result.insertedCount === 1
-              ? "novo registro salvo"
-              : "novos registros salvos"
-          } em pix.relatorios (${result.skippedCount} já ${
-            result.skippedCount === 1 ? "existia" : "existiam"
-          } no banco).`,
-        });
-      } else if (result.insertedCount > 0) {
-        setSaveFeedback({
-          type: "success",
-          message: `${result.insertedCount} ${
-            result.insertedCount === 1
-              ? "registro salvo"
-              : "registros salvos"
-          } com sucesso na tabela pix.relatorios!`,
-        });
-      } else {
-        setSaveFeedback({
-          type: "info",
-          message: `Todos os ${result.skippedCount} registros deste relatório já estavam salvos na tabela pix.relatorios.`,
-        });
-      }
-    } catch (err) {
-      setError(
-        err instanceof Error
-          ? err.message
-          : "Erro inesperado ao salvar no Supabase."
-      );
-    } finally {
       setSaving(false);
     }
-  };
+  }, []);
 
   const handleCopyText = async (key: string, text: string) => {
     try {
@@ -174,22 +154,16 @@ export function ReportReader() {
 
   const handleCopyAllTsv = () => {
     if (!report) return;
-    const header = [
-      "data_transacao",
-      "hora_transacao",
-      "nome_relatorio",
-      "valor",
-      "id_transacao",
-      "conciliado",
-    ].join("\t");
+    const header = ["Data", "Hora", "Pagador", "Valor", "ID da Transação"].join(
+      "\t"
+    );
     const rows = filteredItems.map((item) =>
       [
-        item.dataTransacao || report.dataIso || "",
+        item.dataCurta || report.dataCurta || "",
         item.horaTransacao,
         item.nomeRelatorio,
         item.valor.toFixed(2).replace(".", ","),
         item.idTransacao,
-        "false",
       ].join("\t")
     );
     void handleCopyText("all-tsv", [header, ...rows].join("\n"));
@@ -216,191 +190,137 @@ export function ReportReader() {
   const countMatchesExpected =
     report && report.quantidadeEsperada === report.quantidadeExtraida;
 
-  const pendingToSaveCount = report
-    ? report.itens.filter(
-        (item) => !item.idTransacao || !savedIds.has(item.idTransacao)
-      ).length
-    : 0;
-
-  const allAlreadySaved =
-    report !== null && report.itens.length > 0 && pendingToSaveCount === 0;
-
   return (
     <div className="mx-auto max-w-5xl space-y-6 px-4 py-6 pb-16">
+      <input
+        ref={fileInputRef}
+        type="file"
+        accept="application/pdf,.pdf"
+        className="hidden"
+        onChange={(e) => {
+          const file = e.target.files?.[0];
+          if (file) void processReportPdf(file);
+          e.target.value = "";
+        }}
+      />
+
       {/* Page Title */}
       <div className="flex flex-col justify-between gap-3 sm:flex-row sm:items-center">
         <div className="space-y-1">
-          <div className="flex items-center gap-2">
-            <h1 className="text-2xl font-bold tracking-tight text-foreground">
-              Leitor de Relatórios PIX
-            </h1>
-            <Badge variant="default">PDF → Supabase</Badge>
-          </div>
+          <h1 className="text-2xl font-bold tracking-tight text-foreground">
+            Leitor de Relatórios PIX
+          </h1>
           <p className="text-sm text-muted-foreground">
-            Envie o PDF do relatório diário para extrair as transações e
-            alimentar a tabela{" "}
-            <code className="rounded bg-muted px-1 py-0.5 font-mono text-xs">
-              pix.relatorios
-            </code>
-            .
+            Envie o PDF do relatório diário para registrar automaticamente os
+            pagamentos recebidos.
           </p>
         </div>
 
         {report && (
-          <div className="flex flex-wrap items-center gap-2">
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              disabled={saving}
-              onClick={() => {
-                setReport(null);
-                setFileName(null);
-                setTotalPages(null);
-                setError(null);
-                setSaveFeedback(null);
-                setSavedIds(new Set());
-                setSearchQuery("");
-              }}
-            >
-              <Trash2 className="h-4 w-4" />
-              Limpar
-            </Button>
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              onClick={() => fileInputRef.current?.click()}
-              disabled={loading || saving}
-            >
-              <FileUp className="h-4 w-4" />
-              Outro PDF
-            </Button>
-            <Button
-              type="button"
-              size="sm"
-              onClick={handleSaveToSupabase}
-              disabled={saving || loading || allAlreadySaved}
-            >
-              {saving ? (
-                <>
-                  <Loader2 className="h-4 w-4 animate-spin" />
-                  Salvando no Supabase...
-                </>
-              ) : allAlreadySaved ? (
-                <>
-                  <CheckCircle2 className="h-4 w-4" />
-                  Salvo no Supabase ({report.itens.length})
-                </>
-              ) : (
-                <>
-                  <Database className="h-4 w-4" />
-                  Salvar na tabela relatório ({pendingToSaveCount})
-                </>
-              )}
-            </Button>
-          </div>
+          <Button
+            type="button"
+            size="sm"
+            onClick={() => fileInputRef.current?.click()}
+            disabled={loading || saving}
+          >
+            {loading || saving ? (
+              <>
+                <Loader2 className="h-4 w-4 animate-spin" />
+                Processando...
+              </>
+            ) : (
+              <>
+                <FileUp className="h-4 w-4" />
+                Enviar outro PDF
+              </>
+            )}
+          </Button>
         )}
       </div>
 
-      {/* Upload Dropzone Card */}
-      <Card>
-        <CardContent className="p-6">
-          <input
-            ref={fileInputRef}
-            type="file"
-            accept="application/pdf,.pdf"
-            className="hidden"
-            onChange={(e) => {
-              const file = e.target.files?.[0];
-              if (file) void processReportPdf(file);
-              e.target.value = "";
-            }}
-          />
-
-          <div
-            onDragOver={(e) => {
-              e.preventDefault();
-              setIsDragging(true);
-            }}
-            onDragLeave={() => setIsDragging(false)}
-            onDrop={(e) => {
-              e.preventDefault();
-              setIsDragging(false);
-              const file = e.dataTransfer.files?.[0];
-              if (file) void processReportPdf(file);
-            }}
-            onClick={() => !loading && !saving && fileInputRef.current?.click()}
-            className={cn(
-              "flex cursor-pointer flex-col items-center justify-center gap-3 rounded-2xl border-2 border-dashed p-8 text-center transition-colors",
-              isDragging
-                ? "border-primary bg-primary/10"
-                : "border-input bg-secondary/50 hover:border-primary/60 hover:bg-secondary",
-              (loading || saving) && "pointer-events-none opacity-60"
-            )}
-          >
-            <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-primary/10 text-primary">
-              {loading ? (
-                <Loader2 className="h-6 w-6 animate-spin" />
-              ) : (
-                <FileSpreadsheet className="h-6 w-6" />
+      {/* Upload Dropzone Card (hidden once a PDF has been read) */}
+      {!report && (
+        <Card>
+          <CardContent className="p-4">
+            <div
+              onDragOver={(e) => {
+                e.preventDefault();
+                setIsDragging(true);
+              }}
+              onDragLeave={() => setIsDragging(false)}
+              onDrop={(e) => {
+                e.preventDefault();
+                setIsDragging(false);
+                const file = e.dataTransfer.files?.[0];
+                if (file) void processReportPdf(file);
+              }}
+              onClick={() =>
+                !loading && !saving && fileInputRef.current?.click()
+              }
+              className={cn(
+                "flex cursor-pointer flex-col items-center justify-center gap-2.5 rounded-xl border-2 border-dashed px-4 py-5 text-center transition-colors",
+                isDragging
+                  ? "border-primary bg-primary/10"
+                  : "border-input bg-secondary/50 hover:border-primary/60 hover:bg-secondary",
+                (loading || saving) && "pointer-events-none opacity-60"
               )}
-            </div>
+            >
+              <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-primary/10 text-primary">
+                {loading || saving ? (
+                  <Loader2 className="h-5 w-5 animate-spin" />
+                ) : (
+                  <FileSpreadsheet className="h-5 w-5" />
+                )}
+              </div>
 
-            <div className="space-y-1">
               <p className="text-sm font-semibold text-foreground">
                 {loading
-                  ? "Lendo e extraindo transações do PDF..."
+                  ? "Lendo transações do PDF..."
+                  : saving
+                  ? "Salvando pagamentos do relatório..."
                   : fileName
                   ? `Arquivo carregado: ${fileName}`
                   : "Clique para selecionar ou arraste o PDF do relatório aqui"}
               </p>
-              <p className="text-xs text-muted-foreground">
-                Suporta relatórios diários com múltiplas páginas (ex.:{" "}
-                <code className="rounded bg-muted px-1 py-0.5 font-mono text-[11px]">
-                  relatorio_val_2026-11-07.pdf
-                </code>
-                )
-              </p>
-            </div>
 
-            <Button
-              type="button"
-              variant="default"
-              size="sm"
-              disabled={loading || saving}
-              onClick={(e) => {
-                e.stopPropagation();
-                fileInputRef.current?.click();
-              }}
-            >
-              <FileUp className="h-4 w-4" />
-              Selecionar arquivo PDF
-            </Button>
-          </div>
-
-          {error && (
-            <div className="mt-4 flex items-start gap-2.5 rounded-xl border border-destructive/30 bg-destructive/10 p-3.5 text-sm text-destructive">
-              <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
-              <span>{error}</span>
+              <Button
+                type="button"
+                variant="default"
+                size="sm"
+                disabled={loading || saving}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  fileInputRef.current?.click();
+                }}
+              >
+                <FileUp className="h-4 w-4" />
+                Selecionar arquivo PDF
+              </Button>
             </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {error && (
+        <div className="flex items-start gap-2.5 rounded-xl border border-destructive/30 bg-destructive/10 p-3.5 text-sm text-destructive">
+          <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
+          <span>{error}</span>
+        </div>
+      )}
+
+      {saveFeedback && (
+        <div
+          className={cn(
+            "flex items-start gap-2.5 rounded-xl border p-3.5 text-sm",
+            saveFeedback.type === "success"
+              ? "border-emerald-200 bg-emerald-50 text-emerald-800"
+              : "border-border bg-secondary text-foreground"
           )}
-
-          {saveFeedback && (
-            <div
-              className={cn(
-                "mt-4 flex items-start gap-2.5 rounded-xl border p-3.5 text-sm",
-                saveFeedback.type === "success"
-                  ? "border-emerald-200 bg-emerald-50 text-emerald-800"
-                  : "border-border bg-secondary text-foreground"
-              )}
-            >
-              <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-emerald-600" />
-              <span>{saveFeedback.message}</span>
-            </div>
-          )}
-        </CardContent>
-      </Card>
+        >
+          <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-emerald-600" />
+          <span>{saveFeedback.message}</span>
+        </div>
+      )}
 
       {/* Extracted Report Summary + Table */}
       {report && (
@@ -411,7 +331,7 @@ export function ReportReader() {
               <CardHeader className="p-4 pb-2">
                 <CardDescription className="flex items-center gap-1.5 text-xs font-medium uppercase tracking-wider">
                   <Calendar className="h-3.5 w-3.5 text-primary" />
-                  data_transacao
+                  Data do Relatório
                 </CardDescription>
                 <CardTitle className="text-2xl font-bold text-foreground">
                   {report.dataCurta || "—"}
@@ -421,7 +341,6 @@ export function ReportReader() {
                 <p className="text-xs text-muted-foreground">
                   {report.diaSemana ? `${report.diaSemana}, ` : ""}
                   {report.dataCompleta || "Data não identificada"}
-                  {report.dataIso ? ` (${report.dataIso})` : ""}
                 </p>
               </CardContent>
             </Card>
@@ -446,11 +365,11 @@ export function ReportReader() {
             <Card>
               <CardHeader className="p-4 pb-2">
                 <CardDescription className="flex items-center justify-between text-xs font-medium uppercase tracking-wider">
-                  <span>PIX Extraídos</span>
+                  <span>Quantidade de PIX</span>
                   {countMatchesExpected ? (
                     <Badge variant="success" className="gap-1">
                       <CheckCircle2 className="h-3 w-3" />
-                      100%
+                      Completo
                     </Badge>
                   ) : (
                     <Badge variant="warning">Verificar</Badge>
@@ -465,15 +384,11 @@ export function ReportReader() {
               </CardHeader>
               <CardContent className="p-4 pt-0">
                 <p className="text-xs text-muted-foreground">
-                  {savedIds.size > 0
-                    ? `${savedIds.size} já ${
-                        savedIds.size === 1 ? "salvo" : "salvos"
-                      } no Supabase`
-                    : totalPages
-                    ? `Extraído de ${totalPages} ${
+                  {totalPages
+                    ? `Lido de ${totalPages} ${
                         totalPages === 1 ? "página" : "páginas"
                       }`
-                    : "Pronto para salvar"}
+                    : "Pagamentos identificados"}
                 </p>
               </CardContent>
             </Card>
@@ -481,7 +396,7 @@ export function ReportReader() {
             <Card>
               <CardHeader className="p-4 pb-2">
                 <CardDescription className="text-xs font-medium uppercase tracking-wider">
-                  Total Recebido (valor)
+                  Total Recebido
                 </CardDescription>
                 <CardTitle className="text-2xl font-bold text-primary">
                   {report.totalRecebidoFormatado}
@@ -489,77 +404,11 @@ export function ReportReader() {
               </CardHeader>
               <CardContent className="p-4 pt-0">
                 <p className="text-xs text-muted-foreground">
-                  Soma dos {report.quantidadeExtraida} registros extraídos
+                  Soma dos {report.quantidadeExtraida} pagamentos
                 </p>
               </CardContent>
             </Card>
           </div>
-
-          {/* Field Mapping Banner */}
-          <Card className="border-primary/20 bg-primary/5">
-            <CardContent className="flex flex-col justify-between gap-4 p-4 sm:flex-row sm:items-center">
-              <div className="space-y-1">
-                <p className="text-xs font-semibold uppercase tracking-wider text-primary">
-                  Correspondência para a tabela pix.relatorios
-                </p>
-                <p className="text-xs text-muted-foreground">
-                  <code className="rounded bg-card px-1.5 py-0.5 font-mono text-foreground">
-                    data_transacao
-                  </code>{" "}
-                  = <strong>{report.dataIso || "—"}</strong> (ref.{" "}
-                  {report.dataCurta || "—"}) ·{" "}
-                  <code className="rounded bg-card px-1.5 py-0.5 font-mono text-foreground">
-                    hora_transacao
-                  </code>{" "}
-                  = Hora ·{" "}
-                  <code className="rounded bg-card px-1.5 py-0.5 font-mono text-foreground">
-                    nome_relatorio
-                  </code>{" "}
-                  = Pagador ·{" "}
-                  <code className="rounded bg-card px-1.5 py-0.5 font-mono text-foreground">
-                    valor
-                  </code>{" "}
-                  = Valor ·{" "}
-                  <code className="rounded bg-card px-1.5 py-0.5 font-mono text-foreground">
-                    id_transacao
-                  </code>{" "}
-                  = endToEndId ·{" "}
-                  <code className="rounded bg-card px-1.5 py-0.5 font-mono text-foreground">
-                    conciliado
-                  </code>{" "}
-                  = <strong>false</strong> ·{" "}
-                  <code className="rounded bg-card px-1.5 py-0.5 font-mono text-foreground">
-                    id_cliente / id_comprovante
-                  </code>{" "}
-                  = <strong>null</strong>
-                </p>
-              </div>
-
-              <Button
-                type="button"
-                onClick={handleSaveToSupabase}
-                disabled={saving || loading || allAlreadySaved}
-                className="shrink-0"
-              >
-                {saving ? (
-                  <>
-                    <Loader2 className="h-4 w-4 animate-spin" />
-                    Salvando...
-                  </>
-                ) : allAlreadySaved ? (
-                  <>
-                    <CheckCircle2 className="h-4 w-4" />
-                    Todos os registros salvos
-                  </>
-                ) : (
-                  <>
-                    <Database className="h-4 w-4" />
-                    Alimentar tabela relatório ({pendingToSaveCount})
-                  </>
-                )}
-              </Button>
-            </CardContent>
-          </Card>
 
           {/* Transactions Table Card */}
           <Card className="overflow-hidden">
@@ -570,12 +419,7 @@ export function ReportReader() {
                     PIX de clientes do vendedor — {report.quantidadeEsperada} PIX
                   </CardTitle>
                   <CardDescription className="mt-0.5 text-xs">
-                    Visualização dos registros extraídos do PDF com os nomes das
-                    colunas de{" "}
-                    <code className="rounded bg-muted px-1 py-0.5 font-mono">
-                      pix.relatorios
-                    </code>
-                    .
+                    Lista de pagamentos extraídos do relatório diário.
                   </CardDescription>
                 </div>
 
@@ -586,7 +430,7 @@ export function ReportReader() {
                       type="text"
                       value={searchQuery}
                       onChange={(e) => setSearchQuery(e.target.value)}
-                      placeholder="Filtrar pagador, hora, valor ou ID..."
+                      placeholder="Buscar pagador, hora ou valor..."
                       className="h-9 pl-9 text-xs"
                     />
                   </div>
@@ -620,42 +464,12 @@ export function ReportReader() {
                   <thead>
                     <tr className="border-b border-border bg-muted/60 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
                       <th className="w-12 px-3 py-3 text-center">#</th>
-                      <th className="w-28 px-3 py-3">
-                        <div>Data</div>
-                        <div className="font-mono text-[10px] font-normal lowercase text-muted-foreground">
-                          data_transacao
-                        </div>
-                      </th>
-                      <th className="w-20 px-3 py-3">
-                        <div>Hora</div>
-                        <div className="font-mono text-[10px] font-normal lowercase text-muted-foreground">
-                          hora_transacao
-                        </div>
-                      </th>
-                      <th className="px-3 py-3">
-                        <div>Pagador</div>
-                        <div className="font-mono text-[10px] font-normal lowercase text-muted-foreground">
-                          nome_relatorio
-                        </div>
-                      </th>
-                      <th className="w-32 px-3 py-3 text-right">
-                        <div>Valor</div>
-                        <div className="font-mono text-[10px] font-normal lowercase text-muted-foreground">
-                          valor
-                        </div>
-                      </th>
-                      <th className="px-3 py-3">
-                        <div>endToEndId</div>
-                        <div className="font-mono text-[10px] font-normal lowercase text-muted-foreground">
-                          id_transacao
-                        </div>
-                      </th>
-                      <th className="w-28 px-3 py-3 text-center">
-                        <div>Status</div>
-                        <div className="font-mono text-[10px] font-normal lowercase text-muted-foreground">
-                          conciliado
-                        </div>
-                      </th>
+                      <th className="w-24 px-3 py-3">Data</th>
+                      <th className="w-20 px-3 py-3">Hora</th>
+                      <th className="px-3 py-3">Pagador</th>
+                      <th className="w-32 px-3 py-3 text-right">Valor</th>
+                      <th className="px-3 py-3">ID da Transação</th>
+                      <th className="w-24 px-3 py-3 text-center">Status</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-border">
@@ -665,7 +479,7 @@ export function ReportReader() {
                           colSpan={7}
                           className="px-4 py-8 text-center text-sm text-muted-foreground"
                         >
-                          Nenhum registro encontrado para o filtro informado.
+                          Nenhum pagamento encontrado para a busca informada.
                         </td>
                       </tr>
                     ) : (
@@ -683,11 +497,7 @@ export function ReportReader() {
                               {item.index}
                             </td>
                             <td className="whitespace-nowrap px-3 py-3">
-                              <Badge
-                                variant="secondary"
-                                className="font-mono"
-                                title={item.dataTransacao || report.dataIso || ""}
-                              >
+                              <Badge variant="secondary" className="font-mono">
                                 {item.dataCurta || report.dataCurta || "—"}
                               </Badge>
                             </td>
@@ -730,10 +540,10 @@ export function ReportReader() {
                                   <Check className="h-3 w-3" />
                                   Salvo
                                 </Badge>
+                              ) : saving ? (
+                                <Badge variant="secondary">Salvando...</Badge>
                               ) : (
-                                <Badge variant="outline" className="font-mono">
-                                  false
-                                </Badge>
+                                <Badge variant="outline">Pendente</Badge>
                               )}
                             </td>
                           </tr>
@@ -749,7 +559,7 @@ export function ReportReader() {
                           className="px-3 py-3 text-right text-xs uppercase tracking-wider text-muted-foreground"
                         >
                           Total ({filteredItems.length}{" "}
-                          {filteredItems.length === 1 ? "registro" : "registros"})
+                          {filteredItems.length === 1 ? "pagamento" : "pagamentos"})
                         </td>
                         <td className="whitespace-nowrap px-3 py-3 text-right font-mono text-sm font-bold text-primary">
                           {formatBrCurrency(filteredTotal)}
