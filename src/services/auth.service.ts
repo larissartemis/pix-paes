@@ -28,4 +28,32 @@ export const authService = {
     const { error } = await supabase.auth.signOut();
     return { error };
   },
+
+  async resetPasswordForEmail(email: string, redirectTo: string) {
+    const { data, error } = await supabase.auth.resetPasswordForEmail(
+      email.trim(),
+      { redirectTo }
+    );
+    return { data, error };
+  },
+
+  async updatePassword(newPassword: string) {
+    const { data, error } = await supabase.auth.updateUser({
+      password: newPassword,
+    });
+    return { data, error };
+  },
+
+  async exchangeCodeForSession(code: string) {
+    const { data, error } = await supabase.auth.exchangeCodeForSession(code);
+    return { data, error };
+  },
+
+  async verifyRecoveryOtp(tokenHash: string) {
+    const { data, error } = await supabase.auth.verifyOtp({
+      token_hash: tokenHash,
+      type: "recovery",
+    });
+    return { data, error };
+  },
 };

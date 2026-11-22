@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useEffect, useState } from "react";
-import { useRouter } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import { Loader2 } from "lucide-react";
 import { authService } from "@/services/auth.service";
 
@@ -11,14 +11,16 @@ export default function AuthLayout({
   children: React.ReactNode;
 }) {
   const router = useRouter();
+  const pathname = usePathname();
   const [checking, setChecking] = useState(true);
+  const isResetPassword = pathname === "/redefinir-senha";
 
   useEffect(() => {
     let mounted = true;
 
     authService.getSession().then((session) => {
       if (!mounted) return;
-      if (session) {
+      if (session && !isResetPassword) {
         router.replace("/");
         return;
       }
@@ -27,7 +29,7 @@ export default function AuthLayout({
 
     const subscription = authService.onAuthStateChange((session) => {
       if (!mounted) return;
-      if (session) {
+      if (session && !isResetPassword) {
         router.replace("/");
       }
     });
@@ -36,7 +38,7 @@ export default function AuthLayout({
       mounted = false;
       subscription.unsubscribe();
     };
-  }, [router]);
+  }, [router, isResetPassword]);
 
   if (checking) {
     return (

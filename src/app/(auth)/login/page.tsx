@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useState } from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { Eye, EyeOff, Loader2, Lock, Mail } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -116,6 +117,15 @@ export default function LoginPage() {
               "Entrar"
             )}
           </Button>
+
+          <div className="text-center">
+            <Link
+              href="/esqueci-senha"
+              className="text-xs font-medium text-primary hover:underline"
+            >
+              Esqueci minha senha
+            </Link>
+          </div>
         </form>
       </CardContent>
     </Card>
