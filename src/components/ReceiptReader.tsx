@@ -4,25 +4,47 @@ import React, { useCallback, useEffect, useRef, useState } from "react";
 import {
   AlertTriangle,
   Check,
+  CheckCircle2,
   ChevronDown,
   ChevronUp,
   ClipboardPaste,
   Copy,
+  Database,
   Download,
   History,
   Link2,
   Loader2,
+  Search,
   Share2,
   Sparkles,
   Trash2,
   Upload,
+  UserCheck,
   X,
 } from "lucide-react";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import { consumeSharedPayload } from "@/lib/share-db";
 import {
   ParsedReceipt,
   parseReceiptText,
 } from "@/lib/receipt-parser";
+import { clientesService, type ClienteRow } from "@/services/clientes.service";
+import {
+  buildComprovanteDefaults,
+  comprovantesService,
+  suggestClientesForReceipt,
+  type ClientSuggestion,
+} from "@/services/comprovantes.service";
 
 interface HistoryItem {
   id: string;
@@ -68,7 +90,66 @@ export function ReceiptReader() {
     useState<BeforeInstallPromptEvent | null>(null);
   const [isStandalone, setIsStandalone] = useState(false);
 
+  // Supabase clients & receipt persistence state
+  const [clientes, setClientes] = useState<ClienteRow[]>([]);
+  const [clientesLoaded, setClientesLoaded] = useState(false);
+  const [selectedClienteId, setSelectedClienteId] = useState("");
+  const [clientSearch, setClientSearch] = useState("");
+  const [suggestions, setSuggestions] = useState<ClientSuggestion[]>([]);
+  const [draftNomeComprovante, setDraftNomeComprovante] = useState("");
+  const [draftValor, setDraftValor] = useState("");
+  const [draftData, setDraftData] = useState("");
+  const [draftHora, setDraftHora] = useState("");
+  const [draftIdTransacao, setDraftIdTransacao] = useState("");
+  const [draftBancoPagador, setDraftBancoPagador] = useState("");
+  const [savingDb, setSavingDb] = useState(false);
+  const [saveDbSuccess, setSaveDbSuccess] = useState<string | null>(null);
+  const [saveDbError, setSaveDbError] = useState<string | null>(null);
+
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+
+  // Load active clients from Supabase for matching
+  useEffect(() => {
+    let mounted = true;
+    clientesService.list().then(({ data }) => {
+      if (!mounted) return;
+      setClientes(data.filter((c) => c.ativo));
+      setClientesLoaded(true);
+    });
+    return () => {
+      mounted = false;
+    };
+  }, []);
+
+  // Pre-fill editable fields when a new receipt is parsed
+  useEffect(() => {
+    if (!receipt) return;
+    const defaults = buildComprovanteDefaults(receipt);
+    setDraftNomeComprovante(defaults.nome_comprovante);
+    setDraftValor(defaults.valor);
+    setDraftData(defaults.data_transacao);
+    setDraftHora(defaults.hora_transacao);
+    setDraftIdTransacao(defaults.id_transacao);
+    setDraftBancoPagador(defaults.banco_pagador);
+    setSaveDbSuccess(null);
+    setSaveDbError(null);
+    setClientSearch("");
+  }, [receipt]);
+
+  // Suggest matching client whenever receipt or clients list updates
+  useEffect(() => {
+    if (!receipt || clientes.length === 0) {
+      setSuggestions([]);
+      setSelectedClienteId("");
+      return;
+    }
+    const nextSuggestions = suggestClientesForReceipt(
+      receipt.payerName,
+      clientes
+    );
+    setSuggestions(nextSuggestions);
+    setSelectedClienteId(nextSuggestions[0]?.cliente.id ?? "");
+  }, [receipt, clientes]);
 
   // Load history & PWA install state
   useEffect(() => {
@@ -606,6 +687,279 @@ export function ReceiptReader() {
             )}
           </div>
         </section>
+      )}
+
+      {/* Confirm & Save Receipt to Supabase */}
+      {receipt && (
+        <Card className="border-primary/20">
+          <CardHeader>
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="flex items-center gap-2">
+                <Database className="h-4 w-4 text-primary" />
+                <CardTitle className="text-base">
+                  Confirmar e salvar comprovante
+                </CardTitle>
+              </div>
+              <Badge variant="secondary">pix.comprovantes</Badge>
+            </div>
+            <CardDescription>
+              Será salvo com status{" "}
+              <span className="font-medium text-foreground">
+                aguardando_relatorio
+              </span>{" "}
+              vinculado ao cliente selecionado.
+            </CardDescription>
+          </CardHeader>
+
+          <CardContent className="space-y-4">
+            {/* Client Suggestion & Selection */}
+            <div className="space-y-2 rounded-xl border border-border bg-secondary/40 p-3.5">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <Label htmlFor="cliente-select" className="flex items-center gap-1.5">
+                  <UserCheck className="h-4 w-4 text-primary" />
+                  Cliente vinculado *
+                </Label>
+                {suggestions.length > 0 ? (
+                  <Badge variant="success">Sugestão automática encontrada</Badge>
+                ) : (
+                  <Badge variant="warning">Seleção manual necessária</Badge>
+                )}
+              </div>
+
+              {suggestions.length > 0 && (
+                <div className="flex flex-wrap gap-1.5">
+                  {suggestions.map((item) => {
+                    const isSelected = selectedClienteId === item.cliente.id;
+                    return (
+                      <button
+                        key={item.cliente.id}
+                        type="button"
+                        onClick={() => setSelectedClienteId(item.cliente.id)}
+                        className={`rounded-lg border px-2.5 py-1.5 text-left text-xs transition ${
+                          isSelected
+                            ? "border-primary bg-primary text-primary-foreground"
+                            : "border-border bg-card text-foreground hover:bg-accent"
+                        }`}
+                      >
+                        <span className="block font-semibold">
+                          {item.cliente.nome_loja}
+                        </span>
+                        <span
+                          className={`block text-[11px] ${
+                            isSelected
+                              ? "text-primary-foreground/80"
+                              : "text-muted-foreground"
+                          }`}
+                        >
+                          {item.matchedBy}
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+
+              <div className="relative">
+                <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+                <Input
+                  value={clientSearch}
+                  onChange={(e) => setClientSearch(e.target.value)}
+                  placeholder="Filtrar cliente por loja ou nome no Pix..."
+                  className="pl-10"
+                />
+              </div>
+
+              <select
+                id="cliente-select"
+                value={selectedClienteId}
+                onChange={(e) => setSelectedClienteId(e.target.value)}
+                className="flex h-10 w-full rounded-xl border border-input bg-card px-3 py-2 text-sm text-foreground shadow-xs transition-colors focus-visible:border-ring focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/20"
+              >
+                <option value="">
+                  {clientesLoaded
+                    ? "Selecione um cliente..."
+                    : "Carregando clientes..."}
+                </option>
+                {clientes
+                  .filter((c) => {
+                    const q = clientSearch.trim().toLowerCase();
+                    if (!q) return true;
+                    return [
+                      c.nome_loja,
+                      ...(c.nomes_comprovante ?? []),
+                      ...(c.nomes_relatorio ?? []),
+                    ]
+                      .join(" ")
+                      .toLowerCase()
+                      .includes(q);
+                  })
+                  .map((c) => (
+                    <option key={c.id} value={c.id}>
+                      {c.nome_loja}
+                    </option>
+                  ))}
+              </select>
+
+              {!selectedClienteId && (
+                <p className="text-xs font-medium text-amber-700">
+                  Não é possível salvar um comprovante sem vincular a um cliente.
+                </p>
+              )}
+            </div>
+
+            {/* Editable Receipt Fields */}
+            <div className="grid gap-3 sm:grid-cols-2">
+              <div className="space-y-1.5 sm:col-span-2">
+                <Label htmlFor="save-nome">Nome no comprovante *</Label>
+                <Input
+                  id="save-nome"
+                  value={draftNomeComprovante}
+                  onChange={(e) => setDraftNomeComprovante(e.target.value)}
+                  placeholder="Nome do pagador no Pix"
+                />
+              </div>
+
+              <div className="space-y-1.5">
+                <Label htmlFor="save-valor">Valor (R$) *</Label>
+                <Input
+                  id="save-valor"
+                  type="number"
+                  step="0.01"
+                  min="0.01"
+                  value={draftValor}
+                  onChange={(e) => setDraftValor(e.target.value)}
+                  placeholder="0.00"
+                />
+              </div>
+
+              <div className="space-y-1.5">
+                <Label htmlFor="save-banco">Banco pagador</Label>
+                <Input
+                  id="save-banco"
+                  value={draftBancoPagador}
+                  onChange={(e) => setDraftBancoPagador(e.target.value)}
+                  placeholder="Ex.: Nubank, PicPay..."
+                />
+              </div>
+
+              <div className="space-y-1.5">
+                <Label htmlFor="save-data">Data da transação *</Label>
+                <Input
+                  id="save-data"
+                  type="date"
+                  value={draftData}
+                  onChange={(e) => setDraftData(e.target.value)}
+                />
+              </div>
+
+              <div className="space-y-1.5">
+                <Label htmlFor="save-hora">Hora da transação</Label>
+                <Input
+                  id="save-hora"
+                  type="time"
+                  value={draftHora}
+                  onChange={(e) => setDraftHora(e.target.value)}
+                />
+              </div>
+
+              <div className="space-y-1.5 sm:col-span-2">
+                <Label htmlFor="save-e2e">ID da transação (E2E)</Label>
+                <Input
+                  id="save-e2e"
+                  value={draftIdTransacao}
+                  onChange={(e) => setDraftIdTransacao(e.target.value)}
+                  placeholder="E00000000..."
+                  className="font-mono text-xs"
+                />
+              </div>
+            </div>
+
+            {saveDbError && (
+              <div className="rounded-xl border border-red-200 bg-red-50 px-3 py-2.5 text-sm text-red-700">
+                {saveDbError}
+              </div>
+            )}
+
+            {saveDbSuccess && (
+              <div className="flex items-center gap-2 rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2.5 text-sm text-emerald-800">
+                <CheckCircle2 className="h-4 w-4 shrink-0" />
+                <span>{saveDbSuccess}</span>
+              </div>
+            )}
+
+            <Button
+              type="button"
+              disabled={savingDb || !selectedClienteId}
+              className="w-full"
+              onClick={async () => {
+                setSaveDbError(null);
+                setSaveDbSuccess(null);
+
+                const nomeComprovante = draftNomeComprovante.trim();
+                const valorNum = Number(draftValor.replace(",", "."));
+
+                if (!selectedClienteId) {
+                  setSaveDbError("Selecione um cliente para vincular o comprovante.");
+                  return;
+                }
+                if (!nomeComprovante) {
+                  setSaveDbError("Informe o nome no comprovante.");
+                  return;
+                }
+                if (!Number.isFinite(valorNum) || valorNum <= 0) {
+                  setSaveDbError("Informe um valor válido maior que zero.");
+                  return;
+                }
+                if (!draftData) {
+                  setSaveDbError("Informe a data da transação.");
+                  return;
+                }
+
+                setSavingDb(true);
+                const { data, error: insertError } = await comprovantesService.save({
+                  id_cliente: selectedClienteId,
+                  nome_comprovante: nomeComprovante,
+                  valor: Number(valorNum.toFixed(2)),
+                  data_transacao: draftData,
+                  hora_transacao: draftHora || null,
+                  id_transacao: draftIdTransacao.trim() || null,
+                  banco_pagador: draftBancoPagador.trim() || null,
+                  nome_recebedor: receipt.receiverName || null,
+                  cpf_cnpj_pagador: receipt.payerDocument || null,
+                  status: "aguardando_relatorio",
+                  confianca_ocr: receipt.confidence || null,
+                });
+                setSavingDb(false);
+
+                if (insertError || !data) {
+                  setSaveDbError(
+                    insertError || "Não foi possível salvar o comprovante."
+                  );
+                  return;
+                }
+
+                const clienteNome =
+                  clientes.find((c) => c.id === selectedClienteId)?.nome_loja ||
+                  "cliente selecionado";
+                setSaveDbSuccess(
+                  `Comprovante salvo e vinculado a "${clienteNome}"!`
+                );
+              }}
+            >
+              {savingDb ? (
+                <>
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                  Salvando comprovante...
+                </>
+              ) : (
+                <>
+                  <CheckCircle2 className="h-4 w-4" />
+                  Confirmar e salvar comprovante
+                </>
+              )}
+            </Button>
+          </CardContent>
+        </Card>
       )}
 
       {/* Empty State */}

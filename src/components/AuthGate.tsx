@@ -101,13 +101,7 @@ export function AuthGate({ children }: AuthGateProps) {
 
   const sidebarItems: NavItem[] = [
     { href: "/", label: "Início", icon: Home },
-    {
-      href: "/clientes",
-      label: "Clientes",
-      icon: Users,
-      disabled: true,
-      badge: "Em breve",
-    },
+    { href: "/clientes", label: "Clientes", icon: Users },
     { href: "/relatorios", label: "Relatórios", icon: FileSpreadsheet },
     {
       href: "/conferencia",
@@ -122,7 +116,7 @@ export function AuthGate({ children }: AuthGateProps) {
   const bottomSideItems = {
     left: [
       { href: "/", label: "Início", icon: Home, disabled: false },
-      { href: "/clientes", label: "Clientes", icon: Users, disabled: true },
+      { href: "/clientes", label: "Clientes", icon: Users, disabled: false },
     ],
     right: [
       {

@@ -37,14 +37,14 @@ export default function HomePage() {
       </div>
 
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-        {/* Card 1: Clientes (Em desenvolvimento) */}
-        <Card className="flex flex-col justify-between opacity-85">
+        {/* Card 1: Clientes (Ativo) */}
+        <Card className="flex flex-col justify-between border-primary/20">
           <CardHeader>
             <div className="mb-2 flex items-center justify-between">
-              <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-secondary text-muted-foreground">
+              <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-primary/10 text-primary">
                 <Users className="h-5 w-5" />
               </div>
-              <Badge variant="secondary">Em breve</Badge>
+              <Badge variant="success">Ativo</Badge>
             </div>
             <CardTitle>Clientes</CardTitle>
             <CardDescription>
@@ -53,9 +53,12 @@ export default function HomePage() {
             </CardDescription>
           </CardHeader>
           <CardContent>
-            <Button variant="outline" disabled className="w-full">
-              Em desenvolvimento
-            </Button>
+            <Link href="/clientes" className="block">
+              <Button variant="outline" className="w-full">
+                Gerenciar clientes
+                <ArrowRight className="h-4 w-4" />
+              </Button>
+            </Link>
           </CardContent>
         </Card>
 
