@@ -20,5 +20,10 @@ export const supabase = createClient<Database, "pix">(
     db: {
       schema: "pix",
     },
+    auth: {
+      persistSession: true,
+      autoRefreshToken: true,
+      detectSessionInUrl: true,
+    },
   }
 );
