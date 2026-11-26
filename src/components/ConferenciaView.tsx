@@ -47,6 +47,7 @@ import {
   listAvailableReportDates,
   reconcilePendingWithReport,
   updateConciliado,
+  type ReconcileMatchItem,
   type RelatorioRow,
 } from "@/services/relatorios.service";
 
@@ -93,7 +94,9 @@ export function ConferenciaView() {
   const [matchFeedback, setMatchFeedback] = useState<{
     type: "success" | "info";
     message: string;
+    matches?: ReconcileMatchItem[];
   } | null>(null);
+  const [matchDetailsExpanded, setMatchDetailsExpanded] = useState(false);
 
   // Filters, Sorting & Pagination — Default filter: "Conferido: Não" selected
   const [searchQuery, setSearchQuery] = useState("");
@@ -106,6 +109,7 @@ export function ConferenciaView() {
   const [copiedSummary, setCopiedSummary] = useState(false);
 
   const filterDropdownRef = useRef<HTMLDivElement | null>(null);
+  const autoMatchRunningRef = useRef(false);
 
   // Close checkbox dropdown when clicking outside
   useEffect(() => {
@@ -141,41 +145,44 @@ export function ConferenciaView() {
 
   const runAutoMatch = useCallback(
     async (targetDateIso: string, silentIfZero = false) => {
+      if (autoMatchRunningRef.current) return;
+      autoMatchRunningRef.current = true;
       setMatching(true);
       setError(null);
 
-      const result = await reconcilePendingWithReport(targetDateIso);
-      setMatching(false);
+      try {
+        const result = await reconcilePendingWithReport(targetDateIso);
 
-      if (result.error) {
-        setError(result.error);
-        return;
-      }
-
-      if (result.matchedCount > 0) {
-        const details: string[] = [];
-        if (result.matchedSameDateCount > 0) {
-          details.push(`${result.matchedSameDateCount} na mesma data`);
+        if (result.error) {
+          setError(result.error);
+          return;
         }
-        if (result.matchedFutureDateCount > 0) {
-          details.push(
-            `${result.matchedFutureDateCount} em data posterior (cliente pagou depois)`
+
+        if (result.matchedCount > 0) {
+          setMatchDetailsExpanded(false);
+          setMatchFeedback({
+            type: "success",
+            message: `${result.matchedCount} ${
+              result.matchedCount === 1
+                ? "novo comprovante vinculado automaticamente"
+                : "novos comprovantes vinculados automaticamente"
+            }!`,
+            matches: result.matches,
+          });
+        } else if (!silentIfZero) {
+          setMatchFeedback((prev) =>
+            prev?.type === "success"
+              ? prev
+              : {
+                  type: "info",
+                  message:
+                    "Busca concluída: nenhum novo comprovante pendente encontrado para vincular a este relatório ou datas futuras.",
+                }
           );
         }
-        setMatchFeedback({
-          type: "success",
-          message: `${result.matchedCount} ${
-            result.matchedCount === 1
-              ? "novo comprovante vinculado automaticamente"
-              : "novos comprovantes vinculados automaticamente"
-          }${details.length > 0 ? ` (${details.join(", ")})` : ""}!`,
-        });
-      } else if (!silentIfZero) {
-        setMatchFeedback({
-          type: "info",
-          message:
-            "Busca concluída: nenhum novo comprovante pendente encontrado para vincular a este relatório ou datas futuras.",
-        });
+      } finally {
+        autoMatchRunningRef.current = false;
+        setMatching(false);
       }
     },
     []
@@ -493,14 +500,73 @@ export function ConferenciaView() {
       {matchFeedback && (
         <div
           className={cn(
-            "flex items-start gap-2.5 rounded-xl border p-3.5 text-sm",
+            "rounded-xl border p-3.5 text-sm",
             matchFeedback.type === "success"
               ? "border-emerald-200 bg-emerald-50 text-emerald-800"
               : "border-border bg-secondary text-foreground"
           )}
         >
-          <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-emerald-600" />
-          <span>{matchFeedback.message}</span>
+          {matchFeedback.matches && matchFeedback.matches.length > 0 ? (
+            <div>
+              <button
+                type="button"
+                onClick={() => setMatchDetailsExpanded((v) => !v)}
+                aria-expanded={matchDetailsExpanded}
+                className="flex w-full cursor-pointer items-center justify-between gap-2 text-left"
+              >
+                <span className="flex items-center gap-2.5 font-medium">
+                  <CheckCircle2 className="h-4 w-4 shrink-0 text-emerald-600" />
+                  <span>{matchFeedback.message}</span>
+                </span>
+                <span className="inline-flex shrink-0 items-center gap-1 text-xs font-semibold text-emerald-700">
+                  {matchDetailsExpanded ? "Ocultar detalhes" : "Ver detalhes"}
+                  <ChevronDown
+                    className={cn(
+                      "h-4 w-4 transition-transform",
+                      matchDetailsExpanded && "rotate-180"
+                    )}
+                  />
+                </span>
+              </button>
+
+              {matchDetailsExpanded && (
+                <div className="mt-3 space-y-2 border-t border-emerald-200/80 pt-3">
+                  {matchFeedback.matches.map((m) => (
+                    <div
+                      key={`${m.relatorioId}-${m.comprovanteId}`}
+                      className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-emerald-200/70 bg-white/80 px-3 py-2 text-xs text-emerald-950"
+                    >
+                      <div className="min-w-0 space-y-0.5">
+                        <p className="truncate font-semibold">
+                          {m.nomeComprovante || m.nomeRelatorio}
+                        </p>
+                        {m.nomeComprovante &&
+                          m.nomeRelatorio &&
+                          m.nomeComprovante.toLowerCase() !==
+                            m.nomeRelatorio.toLowerCase() && (
+                            <p className="truncate text-[11px] text-emerald-800/80">
+                              No relatório: {m.nomeRelatorio}
+                            </p>
+                          )}
+                        <p className="text-[11px] text-emerald-800/80">
+                          Comprovante: {formatIsoDateBr(m.dataComprovante)} •
+                          Relatório: {formatIsoDateBr(m.dataRelatorio)}
+                        </p>
+                      </div>
+                      <span className="shrink-0 font-bold text-emerald-800">
+                        {formatBrCurrency(m.valor)}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          ) : (
+            <div className="flex items-start gap-2.5">
+              <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-emerald-600" />
+              <span>{matchFeedback.message}</span>
+            </div>
+          )}
         </div>
       )}
 

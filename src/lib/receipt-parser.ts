@@ -68,23 +68,32 @@ function extractAmount(text: string): string | null {
   return `R$ ${num}`;
 }
 
+function normalizeE2ECandidate(raw: string): string {
+  // First 21 chars of a Pix E2E ID are 'E' + 8-digit ISPB + 12-digit YYYYMMDDHHMM.
+  // OCR often confuses '0' with 'O' or 'o' in this numeric prefix.
+  const prefix = raw.slice(0, 21).replace(/[Oo]/g, "0");
+  return prefix + raw.slice(21);
+}
+
 function extractTransactionId(text: string): string | null {
   // Pix E2E IDs are 32 chars: E + 8 digits (ISPB) + 12 digits (YYYYMMDDHHMM) + 11 chars
-  const direct = text.match(/\b(E\d{8}[A-Za-z0-9]{23})\b/);
-  if (direct) return direct[1];
+  const direct = text.match(/\b(E[0-9Oo]{8}[A-Za-z0-9]{23})\b/);
+  if (direct) return normalizeE2ECandidate(direct[1]);
 
-  // Handle wrapped E2E IDs (e.g. PicPay wraps last 2 chars onto next line)
-  const wrapped = text.match(/\b(E\d{8}[A-Za-z0-9]{10,22})\n([A-Za-z0-9]{1,12})(?:\s|$)/);
+  // Handle wrapped E2E IDs (e.g. PicPay, Caixa Tem, or BB PDF wrapping across 1 or more newlines)
+  const wrapped = text.match(
+    /\b(E[0-9Oo]{8}[A-Za-z0-9]{10,22})\s*\n+\s*([A-Za-z0-9]{1,14})(?:\s|$)/
+  );
   if (wrapped) {
-    const combined = `${wrapped[1]}${wrapped[2]}`;
-    if (combined.length <= 34) return combined;
+    const combined = normalizeE2ECandidate(`${wrapped[1]}${wrapped[2]}`);
+    if (combined.length >= 28 && combined.length <= 34) return combined;
   }
 
-  const fallbackE2E = text.match(E2E_REGEX);
-  if (fallbackE2E) return fallbackE2E[1];
+  const fallbackE2E = text.match(/\b(E[0-9Oo]{8}[A-Za-z0-9]{15,26})\b/);
+  if (fallbackE2E) return normalizeE2ECandidate(fallbackE2E[1]);
 
   const authMatch = text.match(
-    /(?:c[oó]digo da autentica[çc][aã]o|id da transa[çc][aã]o|c[oó]digo da transa[çc][aã]o)[:\s]*([A-Za-z0-9-]{10,})/i
+    /(?:c[oó]digo da autentica[çc][aã]o|[i1]d da transa[çc][aã]o|c[oó]digo da transa[çc][aã]o)[:\s]*([A-Za-z0-9-]{10,})/i
   );
   return authMatch ? authMatch[1] : null;
 }
@@ -159,9 +168,9 @@ function extractDateTime(text: string): string | null {
     return `${pad2(d)}/${normalizeMonth(m)}/${y} às ${pad2(hh)}:${mm}`;
   }
 
-  // 2. Word month WITH time: 14 NOV 2026 - 22:51:00 | 15 nov 2026 às 00:14:11 | 15 Nov, 2026 * 01:35
+  // 2. Word month WITH time (with optional "de"): 14 NOV 2026 - 22:51:00 | 22 de novembro de 2026, às 22:48:20 | 15 Nov, 2026 * 01:35
   const wordWithTime = text.match(
-    /(\d{1,2})\s+(jan|fev|mar|abr|mai|jun|jul|ago|set|out|nov|dez)[a-z]*,?\s+(\d{4})\s*(?:às|as|-|\*)?\s*(\d{1,2}):(\d{2})(?::\d{2})?/i
+    /(\d{1,2})\s+(?:de\s+)?(jan|fev|mar|abr|mai|jun|jul|ago|set|out|nov|dez)[a-zç]*,?\s+(?:de\s+)?(\d{4}),?\s*(?:às|as|-|\*)?\s*(\d{1,2}):(\d{2})(?::\d{2})?/i
   );
   if (wordWithTime) {
     const [, d, m, y, hh, mm] = wordWithTime;
@@ -177,8 +186,10 @@ function extractDateTime(text: string): string | null {
     return `${pad2(d)}/${pad2(m)}/${y} às ${pad2(hh)}:${mm}`;
   }
 
-  // 4. Fallback: date only
-  const dateOnly = text.match(/(\d{1,2})\/([a-zç]+|\d{1,2})\/(\d{4})/i);
+  // 4. Fallback: date only (slash or word month with optional "de")
+  const dateOnly = text.match(
+    /(\d{1,2})(?:\/|\s+(?:de\s+)?)([a-zç]+|\d{1,2})(?:\/|,?\s+(?:de\s+)?)(\d{4})/i
+  );
   if (dateOnly) {
     const [, d, m, y] = dateOnly;
     return `${pad2(d)}/${normalizeMonth(m)}/${y}`;
@@ -194,11 +205,14 @@ function isLabelLine(line: string): boolean {
     "cpf",
     "cnpj",
     "cpf/cnpj",
+    "cpf ou cnpj",
     "instituição",
     "instituicao",
+    "banco",
     "agência",
     "agencia",
     "conta",
+    "conta corrente",
     "tipo de conta",
     "chave",
     "chave pix",
@@ -211,6 +225,8 @@ function isLabelLine(line: string): boolean {
     "destino",
     "dados de origem",
     "dados de destino",
+    "dados do pagador",
+    "dados do recebedor",
     "quem pagou",
     "quem recebeu",
     "pagador",
@@ -218,8 +234,32 @@ function isLabelLine(line: string): boolean {
     "identificadores",
     "sobre a transação",
     "informações adicionais",
+    "detalhes do pagamento",
+    "autenticação",
+    "autenticacao",
     "dados bancários do recebedor",
+    "comprovante bb",
+    "pix enviado",
+    "transferência concluída",
+    "transferencia concluida",
+    "comprovante de transferência",
+    "comprovante de transferencia",
   ].includes(clean);
+}
+
+function normalizePixKey(rawKey: string | null): string | null {
+  if (!rawKey) return null;
+  let k = rawKey.trim();
+  if (!k.includes("@") && /^[A-Za-z0-9._+-]+&[A-Za-z0-9.-]+\.[A-Za-z]{2,}$/.test(k)) {
+    k = k.replace("&", "@");
+  }
+  return k;
+}
+
+function isLikelyBankLine(line: string): boolean {
+  return /(?:banco|bco|pagbank|pagseguro|picpay|mercado pago|nu pagamentos|stone|inter|itaú|itau|bradesco|santander|caixa|s\.a\.|ip\b)/i.test(
+    line
+  );
 }
 
 function parseKeyValueBlock(lines: string[]): {
@@ -245,6 +285,16 @@ function parseKeyValueBlock(lines: string[]): {
     const nomeInline = line.match(/^Nome[:\s]+(.+)$/i);
     if (nomeInline && !name) {
       name = nomeInline[1].trim();
+      if (
+        lines[i + 1] &&
+        !isLabelLine(lines[i + 1]) &&
+        !/^(?:CPF|CNPJ|Institui[çc][aã]o|Banco|Ag[êe]ncia|Conta|Chave|Tipo)\b/i.test(lines[i + 1].trim()) &&
+        !DOC_REGEX.test(lines[i + 1]) &&
+        !isLikelyBankLine(lines[i + 1]) &&
+        /^[A-ZÀ-Ÿ\s]{2,}$/.test(lines[i + 1].trim())
+      ) {
+        name = `${name} ${lines[++i].trim()}`;
+      }
       continue;
     }
     if (/^Nome$/i.test(line) && lines[i + 1] && !isLabelLine(lines[i + 1]) && !name) {
@@ -252,53 +302,53 @@ function parseKeyValueBlock(lines: string[]): {
       continue;
     }
 
-    const docInline = line.match(/^(?:CPF\/CNPJ|CPF|CNPJ)[:\s]+(.+)$/i);
-    if (docInline && !document) {
-      document = docInline[1].trim();
-      continue;
-    }
-    if (/^(?:CPF\/CNPJ|CPF|CNPJ)$/i.test(line) && lines[i + 1] && !document) {
+    if (/^(?:CPF\s+ou\s+CNPJ|CPF\/CNPJ|CPF|CNP[J)])$/i.test(line) && lines[i + 1] && !document) {
       document = lines[++i].trim();
       continue;
     }
-
-    const instInline = line.match(/^Institui[çc][aã]o[:\s]+(.+)$/i);
-    if (instInline && !bank) {
-      bank = instInline[1].trim();
+    const docInline = line.match(/^(?:CPF\s+ou\s+CNPJ|CPF\/CNPJ|CPF|CNP[J)])[:\s]+(.+)$/i);
+    if (docInline && !isLabelLine(line) && !document) {
+      document = docInline[1].trim();
       continue;
     }
-    if (/^Institui[çc][aã]o$/i.test(line) && lines[i + 1] && !bank) {
+
+    if (/^(?:Institui[çc][aã]o|Banco)$/i.test(line) && lines[i + 1] && !bank) {
       bank = lines[++i].trim();
       continue;
     }
-
-    const agInline = line.match(/^Ag[êe]ncia[:\s]+(.+)$/i);
-    if (agInline && !agency) {
-      agency = agInline[1].trim();
+    const instInline = line.match(/^(?:Institui[çc][aã]o|Banco)[:\s]+(.+)$/i);
+    if (instInline && !isLabelLine(line) && !bank) {
+      bank = instInline[1].trim();
       continue;
     }
+
     if (/^Ag[êe]ncia$/i.test(line) && lines[i + 1] && !agency) {
       agency = lines[++i].trim();
       continue;
     }
-
-    const accInline = line.match(/^Conta[:\s]+(.+)$/i);
-    if (accInline && !account) {
-      account = accInline[1].trim();
+    const agInline = line.match(/^Ag[êe]ncia[:\s]+(.+)$/i);
+    if (agInline && !isLabelLine(line) && !agency) {
+      agency = agInline[1].trim();
       continue;
     }
-    if (/^Conta$/i.test(line) && lines[i + 1] && !account) {
+
+    if (/^Conta(?:\s+corrente)?$/i.test(line) && lines[i + 1] && !account) {
       account = lines[++i].trim();
       continue;
     }
-
-    const keyInline = line.match(/^Chave[:\s]+(.+)$/i);
-    if (keyInline && !pixKey) {
-      pixKey = keyInline[1].trim();
+    const accInline = line.match(/^Conta(?:\s+corrente)?[:\s]+(.+)$/i);
+    if (accInline && !isLabelLine(line) && !account) {
+      account = accInline[1].trim();
       continue;
     }
-    if (/^Chave$/i.test(line) && lines[i + 1] && !pixKey) {
-      pixKey = lines[++i].trim();
+
+    if (/^Chave(?:\s+Pix)?$/i.test(line) && lines[i + 1] && !pixKey) {
+      pixKey = normalizePixKey(lines[++i]);
+      continue;
+    }
+    const keyInline = line.match(/^Chave(?:\s+Pix)?[:\s]+(.+)$/i);
+    if (keyInline && !isLabelLine(line) && !pixKey) {
+      pixKey = normalizePixKey(keyInline[1]);
       continue;
     }
   }
@@ -308,29 +358,45 @@ function parseKeyValueBlock(lines: string[]): {
     const trimmed = line.trim();
     if (!trimmed || trimmed === "-" || isLabelLine(trimmed)) continue;
 
+    const combinedNameDoc = trimmed.match(/^([A-Za-zÀ-ÿ][A-Za-zÀ-ÿ\s.]{2,}?)\s+(\d{11}|\d{14})$/);
+    if (combinedNameDoc) {
+      if (!name) name = combinedNameDoc[1].trim();
+      if (!document) document = combinedNameDoc[2].trim();
+      continue;
+    }
+
     if (!document && DOC_REGEX.test(trimmed)) {
       const m = trimmed.match(DOC_REGEX);
       if (m) document = m[0];
       continue;
     }
-    if (!name && !DOC_REGEX.test(trimmed) && !/^(?:banco|bco|pagbank|picpay|mercado pago|nu pagamentos|stone|cloudwalk|itaú|bradesco|santander|caixa)/i.test(trimmed)) {
+    if (!name && !DOC_REGEX.test(trimmed) && !/^(?:banco|bco|pagbank|picpay|mercado pago|nu pagamentos|stone|cloudwalk|itaú|itau|bradesco|santander|caixa)/i.test(trimmed)) {
       // Avoid picking up OCR icon artifacts (e.g. "o", "®"), account labels, emails, or OCR-mangled email keys
       const letterCount = trimmed.replace(/[^a-zA-ZÀ-ÿ]/g, "").length;
       if (
         letterCount >= 3 &&
-        !/^(?:conta corrente|poupan[çc]a|ag\s*\d+|cc\s*\d+|tipo de)/i.test(trimmed) &&
+        !/^(?:conta corrente|poupan[çc]a|ag\s*\d+|cc\s*\d+|tipo de|comprovante|pix enviado|r\s*\$)/i.test(trimmed) &&
         !/[@©]|\.(?:com|br|net|org)\b/i.test(trimmed)
       ) {
         name = trimmed.replace(/^[^A-Za-z0-9À-ÿ]+/, "").replace(/\s+\.$/, "").trim();
         continue;
       }
     }
-    if (!bank && /(?:banco|bco|pagbank|pagseguro|picpay|mercado pago|nu pagamentos|stone|inter|itaú|bradesco|santander|caixa|s\.a\.|ip\b)/i.test(trimmed)) {
+    if (!bank && isLikelyBankLine(trimmed)) {
       bank = trimmed;
     }
   }
 
   return { name, document, bank, agency, account, pixKey };
+}
+
+function cleanSectionHeaderLine(line: string): string {
+  return line
+    .replace(
+      /^(?:[&*•©®º°+~|()[\]{}<>-]+\s*|[A-Za-z0-9()]{1,3}\s+(?=(?:dados|detalhes|quem|origem|destino|pagador|recebedor|informa[çc][õo]es|ficou|[i1]d)\b))/i,
+      ""
+    )
+    .trim();
 }
 
 function splitSections(lines: string[]): {
@@ -339,40 +405,73 @@ function splitSections(lines: string[]): {
 } {
   const payerMarkers = [
     /^quem pagou$/i,
+    /^quem vai enviar$/i,
     /^dados de origem$/i,
     /^origem$/i,
     /^de$/i,
     /^pagador$/i,
     /^dados do pagador$/i,
+    /^dados de quem fez a transa[çc][aã]o$/i,
     /^pago por$/i,
   ];
   const receiverMarkers = [
     /^quem recebeu$/i,
+    /^quem vai receber$/i,
     /^dados de destino$/i,
     /^destino$/i,
     /^para$/i,
     /^recebedor$/i,
     /^dados do recebedor$/i,
+    /^dados de quem recebeu$/i,
   ];
   const stopMarkers = [
     /^informa[çc][õo]es adicionais$/i,
+    /^dados da transa[çc][aã]o$/i,
+    /^detalhes do pagamento$/i,
     /^identificadores$/i,
-    /^id da transa[çc][aã]o/i,
+    /^[i1]d da transa[çc][aã]o/i,
     /^dados banc[aá]rios/i,
     /^nu pagamentos s\.a\./i,
+    /^esta transa[çc][aã]o foi feita/i,
+    /^autentica[çc][aã]o$/i,
     /^d[uú]vidas\?/i,
+    /^ficou com alguma d[uú]vida\?/i,
     /^ouvidoria/i,
     /^para d[uú]vidas/i,
     /^n\.?[º°]?\s*transa[çc][aã]o/i,
   ];
 
+  // Special case: Banco do Brasil 2-column PDF where unpdf places "Recebedor" and "Pagador" on consecutive lines
+  const bbTwoColIdx = lines.findIndex(
+    (l, idx) =>
+      /^recebedor$/i.test(l.trim()) &&
+      lines[idx + 1] &&
+      /^pagador$/i.test(lines[idx + 1].trim())
+  );
+  if (bbTwoColIdx !== -1) {
+    const pixEnviadoIdx = lines.findIndex((l) => /^pix enviado$/i.test(l.trim()));
+    if (pixEnviadoIdx !== -1 && lines[pixEnviadoIdx + 1] && lines[pixEnviadoIdx + 2]) {
+      const receiverLines = [lines[pixEnviadoIdx + 1].trim()];
+      const payerLines = [lines[pixEnviadoIdx + 2].trim()];
+      for (let i = bbTwoColIdx + 2; i < lines.length; i++) {
+        const t = lines[i].trim();
+        if (stopMarkers.some((m) => m.test(cleanSectionHeaderLine(t))) || /^id:/i.test(t)) break;
+        if (/^chave(?:\s+pix)?/i.test(t)) {
+          receiverLines.push(t);
+          if (lines[i + 1]) receiverLines.push(lines[i + 1].trim());
+        }
+      }
+      return { payerLines, receiverLines };
+    }
+  }
+
   // Special case: Mercado Pago ("Origem e destino")
-  const origemEDestinoIdx = lines.findIndex((l) => /^origem e destino$/i.test(l.trim()));
+  const origemEDestinoIdx = lines.findIndex((l) => /^origem e destino$/i.test(cleanSectionHeaderLine(l)));
   if (origemEDestinoIdx !== -1) {
     const block: string[] = [];
     for (let i = origemEDestinoIdx + 1; i < lines.length; i++) {
       const t = lines[i].trim();
-      if (stopMarkers.some((m) => m.test(t))) break;
+      if (stopMarkers.some((m) => m.test(cleanSectionHeaderLine(t)))) break;
       if (t && t !== "-") block.push(t);
     }
     // In Mercado Pago, first CNPJ/CPF line separates payer from receiver
@@ -394,16 +493,17 @@ function splitSections(lines: string[]): {
   for (const rawLine of lines) {
     const line = rawLine.trim();
     if (!line) continue;
+    const headerCandidate = cleanSectionHeaderLine(line);
 
-    if (payerMarkers.some((m) => m.test(line))) {
+    if (payerMarkers.some((m) => m.test(headerCandidate))) {
       mode = "payer";
       continue;
     }
-    if (receiverMarkers.some((m) => m.test(line))) {
+    if (receiverMarkers.some((m) => m.test(headerCandidate))) {
       mode = "receiver";
       continue;
     }
-    if (stopMarkers.some((m) => m.test(line))) {
+    if (stopMarkers.some((m) => m.test(headerCandidate))) {
       mode = "none";
       continue;
     }

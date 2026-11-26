@@ -7,20 +7,13 @@ import {
   AlertTriangle,
   Check,
   CheckCircle2,
-  ChevronDown,
-  ChevronUp,
   ClipboardPaste,
-  Copy,
-  Database,
   History,
   Link2,
   Loader2,
-  Search,
-  Share2,
   Sparkles,
   Trash2,
   Upload,
-  UserCheck,
   X,
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
@@ -28,7 +21,6 @@ import { Button } from "@/components/ui/button";
 import {
   Card,
   CardContent,
-  CardDescription,
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
@@ -40,12 +32,14 @@ import {
   ParsedReceipt,
   parseReceiptText,
 } from "@/lib/receipt-parser";
+import { cn } from "@/lib/utils";
 import { clientesService, type ClienteRow } from "@/services/clientes.service";
 import {
   buildComprovanteDefaults,
   comprovantesService,
+  isSameReceiptComposite,
   suggestClientesForReceipt,
-  type ClientSuggestion,
+  type RelatorioMatchCandidate,
 } from "@/services/comprovantes.service";
 
 interface HistoryItem {
@@ -56,19 +50,55 @@ interface HistoryItem {
 
 interface BulkReceiptItem {
   id: string;
+  historyId?: string;
   fileName: string;
   status: "new" | "duplicate_db" | "duplicate_batch" | "error";
   errorMessage?: string;
   receipt?: ParsedReceipt;
   selected: boolean;
   selectedClienteId: string;
-  suggestionReason?: string;
+  reportDate?: string;
+  matchedRelatorio?: RelatorioMatchCandidate;
+  confirmRelatorioLink: boolean | null;
   nomeComprovante: string;
   valor: string;
   dataTransacao: string;
   horaTransacao: string;
   idTransacao: string;
   bancoPagador: string;
+}
+
+function isSameHistoryReceipt(a: ParsedReceipt, b: ParsedReceipt): boolean {
+  const defA = buildComprovanteDefaults(a);
+  const defB = buildComprovanteDefaults(b);
+  return isSameReceiptComposite(
+    {
+      idTransacao: defA.id_transacao,
+      dataTransacao: defA.data_transacao,
+      horaTransacao: defA.hora_transacao,
+      valor: defA.valor,
+      nomeComprovante: defA.nome_comprovante,
+    },
+    {
+      idTransacao: defB.id_transacao,
+      dataTransacao: defB.data_transacao,
+      horaTransacao: defB.hora_transacao,
+      valor: defB.valor,
+      nomeComprovante: defB.nome_comprovante,
+    }
+  );
+}
+
+function deduplicateHistoryList(items: HistoryItem[]): HistoryItem[] {
+  const unique: HistoryItem[] = [];
+  for (const item of items) {
+    if (!item?.receipt) continue;
+    const exists = unique.some((u) => isSameHistoryReceipt(u.receipt, item.receipt));
+    if (!exists) {
+      unique.push(item);
+    }
+  }
+  return unique.slice(0, 10);
 }
 
 function isZipFile(file: File): boolean {
@@ -102,6 +132,276 @@ function getMimeTypeFromName(name: string): string {
   return "image/jpeg";
 }
 
+interface ClientPickerProps {
+  id: string;
+  clientes: ClienteRow[];
+  clientesLoaded: boolean;
+  value: string;
+  onChange: (clienteId: string) => void;
+  placeholder?: string;
+}
+
+function ClientPicker({
+  id,
+  clientes,
+  clientesLoaded,
+  value,
+  onChange,
+  placeholder = "Clique e digite para buscar um cliente...",
+}: ClientPickerProps) {
+  const [query, setQuery] = useState("");
+  const [open, setOpen] = useState(false);
+  const selectedCliente = clientes.find((cliente) => cliente.id === value);
+
+  const filteredClientes = clientes.filter((cliente) => {
+    const normalizedQuery = query.trim().toLocaleLowerCase();
+    if (!normalizedQuery) return true;
+    return [
+      cliente.nome_loja,
+      ...(cliente.nomes_comprovante ?? []),
+      ...(cliente.nomes_relatorio ?? []),
+    ]
+      .join(" ")
+      .toLocaleLowerCase()
+      .includes(normalizedQuery);
+  });
+
+  function chooseCliente(cliente: ClienteRow) {
+    setQuery(cliente.nome_loja);
+    setOpen(false);
+    onChange(cliente.id);
+  }
+
+  return (
+    <div className="relative">
+      <Input
+        id={id}
+        role="combobox"
+        aria-expanded={open}
+        aria-controls={`${id}-options`}
+        aria-autocomplete="list"
+        value={query || selectedCliente?.nome_loja || ""}
+        onFocus={(event) => {
+          setOpen(true);
+          event.currentTarget.select();
+        }}
+        onChange={(event) => {
+          setQuery(event.target.value);
+          setOpen(true);
+          onChange("");
+        }}
+        onBlur={() => setOpen(false)}
+        onKeyDown={(event) => {
+          if (event.key === "Escape") setOpen(false);
+        }}
+        placeholder={
+          clientesLoaded ? placeholder : "Carregando clientes..."
+        }
+        disabled={!clientesLoaded}
+        autoComplete="off"
+      />
+      {open && clientesLoaded && (
+        <div
+          id={`${id}-options`}
+          role="listbox"
+          className="absolute inset-x-0 top-full z-20 mt-1 max-h-56 overflow-y-auto rounded-xl border border-border bg-card p-1 shadow-lg"
+        >
+          {filteredClientes.length > 0 ? (
+            filteredClientes.map((cliente) => (
+              <button
+                key={cliente.id}
+                type="button"
+                role="option"
+                aria-selected={value === cliente.id}
+                onMouseDown={(event) => event.preventDefault()}
+                onClick={() => chooseCliente(cliente)}
+                className={cn(
+                  "w-full rounded-lg px-3 py-2 text-left text-sm text-foreground hover:bg-accent",
+                  value === cliente.id && "bg-primary/10 font-medium"
+                )}
+              >
+                {cliente.nome_loja}
+              </button>
+            ))
+          ) : (
+            <p className="px-3 py-2 text-sm text-muted-foreground">
+              Nenhum cliente encontrado.
+            </p>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+interface BulkItemFieldsEditorProps {
+  item: BulkReceiptItem;
+  selectedCliente?: ClienteRow;
+  onUpdate: (patch: Partial<BulkReceiptItem>) => void;
+}
+
+function BulkItemFieldsEditor({
+  item,
+  selectedCliente,
+  onUpdate,
+}: BulkItemFieldsEditorProps) {
+  const [draftNome, setDraftNome] = useState(item.nomeComprovante);
+  const [draftValor, setDraftValor] = useState(item.valor);
+
+  const clientReceiptNames = selectedCliente?.nomes_comprovante ?? [];
+
+  return (
+    <>
+      <div className="space-y-1.5 sm:col-span-2">
+        <Label
+          className={cn(
+            "text-xs",
+            !item.nomeComprovante.trim() && "text-amber-700"
+          )}
+        >
+          Nome no comprovante *
+        </Label>
+        <div className="flex gap-2">
+          <Input
+            value={draftNome}
+            onChange={(e) => setDraftNome(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                e.preventDefault();
+                if (draftNome.trim()) {
+                  onUpdate({ nomeComprovante: draftNome.trim() });
+                }
+              }
+            }}
+            placeholder="Informe o nome do pagador"
+            className="h-9 text-xs"
+          />
+          <Button
+            type="button"
+            size="sm"
+            variant={
+              item.nomeComprovante.trim() &&
+              item.nomeComprovante.trim() === draftNome.trim()
+                ? "outline"
+                : "default"
+            }
+            disabled={!draftNome.trim()}
+            onClick={() => onUpdate({ nomeComprovante: draftNome.trim() })}
+            className="h-9 shrink-0 px-3 text-xs"
+          >
+            <Check className="h-3.5 w-3.5" />
+            OK
+          </Button>
+        </div>
+
+        {clientReceiptNames.length > 0 && (
+          <div className="flex flex-wrap items-center gap-1.5 pt-0.5">
+            <span className="text-[11px] font-medium text-muted-foreground">
+              Sugestões do cliente:
+            </span>
+            {clientReceiptNames.map((nome, idx) => {
+              const isCurrent =
+                draftNome.trim().toLowerCase() === nome.trim().toLowerCase() &&
+                item.nomeComprovante.trim().toLowerCase() ===
+                  nome.trim().toLowerCase();
+              return (
+                <button
+                  key={`${nome}-${idx}`}
+                  type="button"
+                  onClick={() => {
+                    setDraftNome(nome);
+                    onUpdate({ nomeComprovante: nome });
+                  }}
+                  className={cn(
+                    "cursor-pointer rounded-lg border px-2 py-0.5 text-left text-[11px] font-medium transition-colors",
+                    isCurrent
+                      ? "border-primary bg-primary text-primary-foreground"
+                      : "border-border bg-secondary/70 text-foreground hover:border-primary/50 hover:bg-primary/10 hover:text-primary"
+                  )}
+                  title="Clique para usar este nome no comprovante"
+                >
+                  {nome}
+                </button>
+              );
+            })}
+          </div>
+        )}
+      </div>
+
+      <div className="space-y-1 sm:col-span-2">
+        <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-3">
+          <div className="space-y-1">
+            <Label className={cn("text-xs", !item.valor && "text-amber-700")}>
+              Valor (R$) *
+            </Label>
+            <div className="flex gap-1.5">
+              <Input
+                type="number"
+                step="0.01"
+                min="0.01"
+                value={draftValor}
+                onChange={(e) => setDraftValor(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") {
+                    e.preventDefault();
+                    if (draftValor) {
+                      onUpdate({ valor: draftValor });
+                    }
+                  }
+                }}
+                placeholder="0.00"
+                className="h-9 text-xs"
+              />
+              <Button
+                type="button"
+                size="sm"
+                variant={
+                  item.valor && item.valor === draftValor ? "outline" : "default"
+                }
+                disabled={!draftValor}
+                onClick={() => onUpdate({ valor: draftValor })}
+                className="h-9 shrink-0 px-2.5 text-xs"
+              >
+                <Check className="h-3.5 w-3.5" />
+                OK
+              </Button>
+            </div>
+          </div>
+
+          <div className="space-y-1">
+            <Label
+              className={cn("text-xs", !item.dataTransacao && "text-amber-700")}
+            >
+              Data do pagamento *
+            </Label>
+            <Input
+              type="date"
+              value={item.dataTransacao}
+              onChange={(e) => onUpdate({ dataTransacao: e.target.value })}
+              className="h-9 text-xs"
+            />
+          </div>
+
+          <div className="space-y-1">
+            <Label className="text-xs">Hora do pagamento</Label>
+            <Input
+              type="time"
+              value={item.horaTransacao}
+              onChange={(e) => onUpdate({ horaTransacao: e.target.value })}
+              className="h-9 text-xs"
+            />
+          </div>
+        </div>
+      </div>
+    </>
+  );
+}
+
+function formatReportDate(dateIso: string): string {
+  const [year, month, day] = dateIso.split("-");
+  return year && month && day ? `${day}/${month}/${year}` : dateIso;
+}
+
 const HISTORY_KEY = "pix-paes-history-v1";
 
 function extractFirstUrl(input: string): string | null {
@@ -122,32 +422,17 @@ function isPassakyReceiver(parsed: ParsedReceipt): boolean {
 
 export function ReceiptReader() {
   const router = useRouter();
-  const [receipt, setReceipt] = useState<ParsedReceipt | null>(null);
   const [linkInput, setLinkInput] = useState("");
   const [loading, setLoading] = useState(false);
   const [statusMessage, setStatusMessage] = useState<string>("");
   const [progress, setProgress] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [copiedField, setCopiedField] = useState<string | null>(null);
-  const [showReceiver, setShowReceiver] = useState(false);
   const [warningToast, setWarningToast] = useState<string | null>(null);
   const [history, setHistory] = useState<HistoryItem[]>([]);
-  const [isStandalone, setIsStandalone] = useState(false);
 
   // Supabase clients & receipt persistence state
   const [clientes, setClientes] = useState<ClienteRow[]>([]);
   const [clientesLoaded, setClientesLoaded] = useState(false);
-  const [selectedClienteId, setSelectedClienteId] = useState("");
-  const [clientSearch, setClientSearch] = useState("");
-  const [suggestions, setSuggestions] = useState<ClientSuggestion[]>([]);
-  const [draftNomeComprovante, setDraftNomeComprovante] = useState("");
-  const [draftValor, setDraftValor] = useState("");
-  const [draftData, setDraftData] = useState("");
-  const [draftHora, setDraftHora] = useState("");
-  const [draftIdTransacao, setDraftIdTransacao] = useState("");
-  const [draftBancoPagador, setDraftBancoPagador] = useState("");
-  const [savingDb, setSavingDb] = useState(false);
-  const [saveDbError, setSaveDbError] = useState<string | null>(null);
   const [isDragging, setIsDragging] = useState(false);
   const [bulkItems, setBulkItems] = useState<BulkReceiptItem[]>([]);
   const [bulkSaving, setBulkSaving] = useState(false);
@@ -157,6 +442,14 @@ export function ReceiptReader() {
     title: string;
     description: string;
     reconciledCount: number;
+    reconciledItems: Array<{
+      id: string;
+      nomeComprovante: string;
+      nomeCliente: string;
+      valor: string;
+      reportDate: string;
+      nomeRelatorio: string;
+    }>;
     skippedCount: number;
     isBatch: boolean;
   }>({
@@ -164,6 +457,7 @@ export function ReceiptReader() {
     title: "",
     description: "",
     reconciledCount: 0,
+    reconciledItems: [],
     skippedCount: 0,
     isBatch: false,
   });
@@ -183,55 +477,45 @@ export function ReceiptReader() {
     };
   }, []);
 
-  // Pre-fill editable fields when a new receipt is parsed
+  // Re-run client suggestion if clients finish loading after bulkItems are already set
   useEffect(() => {
-    if (!receipt) return;
-    const defaults = buildComprovanteDefaults(receipt);
-    setDraftNomeComprovante(defaults.nome_comprovante);
-    setDraftValor(defaults.valor);
-    setDraftData(defaults.data_transacao);
-    setDraftHora(defaults.hora_transacao);
-    setDraftIdTransacao(defaults.id_transacao);
-    setDraftBancoPagador(defaults.banco_pagador);
-    setSaveDbError(null);
-    setClientSearch("");
-  }, [receipt]);
+    if (clientes.length === 0) return;
+    setBulkItems((prev) => {
+      if (prev.length === 0) return prev;
+      let changed = false;
+      const next = prev.map((item) => {
+        if (item.selectedClienteId || !item.receipt) return item;
+        const matched = suggestClientesForReceipt(
+          item.receipt.payerName,
+          clientes
+        );
+        const suggestedId = matched[0]?.cliente.id ?? "";
+        if (!suggestedId) return item;
+        changed = true;
+        return { ...item, selectedClienteId: suggestedId };
+      });
+      return changed ? next : prev;
+    });
+  }, [clientes]);
 
-  // Suggest matching client whenever receipt or clients list updates
-  useEffect(() => {
-    if (!receipt || clientes.length === 0) {
-      setSuggestions([]);
-      setSelectedClienteId("");
-      return;
-    }
-    const nextSuggestions = suggestClientesForReceipt(
-      receipt.payerName,
-      clientes
-    );
-    setSuggestions(nextSuggestions);
-    setSelectedClienteId(nextSuggestions[0]?.cliente.id ?? "");
-  }, [receipt, clientes]);
-
-  // Load history & PWA install state
+  // Load history (and deduplicate any existing repeated items)
   useEffect(() => {
     try {
       const saved = localStorage.getItem(HISTORY_KEY);
       if (saved) {
-        setHistory(JSON.parse(saved) as HistoryItem[]);
+        const parsedList = JSON.parse(saved) as HistoryItem[];
+        const cleanList = deduplicateHistoryList(parsedList);
+        setHistory(cleanList);
+        if (cleanList.length !== parsedList.length) {
+          localStorage.setItem(HISTORY_KEY, JSON.stringify(cleanList));
+        }
       }
     } catch {
       // ignore storage errors
     }
-
-    const standalone =
-      window.matchMedia("(display-mode: standalone)").matches ||
-      (window.navigator as Navigator & { standalone?: boolean }).standalone ===
-        true;
-    setIsStandalone(standalone);
-
   }, []);
 
-  const saveToHistory = useCallback((parsed: ParsedReceipt) => {
+  const saveToHistory = useCallback((parsed: ParsedReceipt): string => {
     if (!isPassakyReceiver(parsed)) {
       const detected = parsed.receiverName
         ? ` (${parsed.receiverName})`
@@ -243,14 +527,19 @@ export function ReceiptReader() {
       setWarningToast(null);
     }
 
+    const historyId = `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+
     setHistory((prev) => {
+      const filteredPrev = prev.filter(
+        (existing) => !isSameHistoryReceipt(existing.receipt, parsed)
+      );
       const next: HistoryItem[] = [
         {
-          id: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+          id: historyId,
           createdAt: Date.now(),
           receipt: parsed,
         },
-        ...prev,
+        ...filteredPrev,
       ].slice(0, 10);
       try {
         localStorage.setItem(HISTORY_KEY, JSON.stringify(next));
@@ -259,94 +548,278 @@ export function ReceiptReader() {
       }
       return next;
     });
+
+    return historyId;
   }, []);
 
-  const processImageFile = useCallback(
-    async (file: File) => {
-      setError(null);
-      setLoading(true);
-      setProgress(0);
-      setStatusMessage("Preparando leitura da imagem (OCR)...");
+  const updateHistoryEntry = useCallback(
+    (
+      target: { historyId?: string; idTransacao?: string },
+      patch: Partial<ParsedReceipt>
+    ) => {
+      setHistory((prev) => {
+        let updated = false;
+        const next = prev.map((entry) => {
+          const matchById =
+            Boolean(target.historyId) && entry.id === target.historyId;
+          const matchByTx =
+            !matchById &&
+            Boolean(target.idTransacao) &&
+            entry.receipt.transactionId === target.idTransacao;
 
-      try {
-        const { createWorker, PSM } = await import("tesseract.js");
-        const worker = await createWorker("por", 1, {
-          logger: (m) => {
-            if (m.status === "recognizing text") {
-              setProgress(Math.round((m.progress || 0) * 100));
-              setStatusMessage("Lendo texto do comprovante...");
-            } else if (m.status) {
-              setStatusMessage("Carregando motor OCR em português...");
-            }
-          },
+          if (!matchById && !matchByTx) return entry;
+          updated = true;
+          return {
+            ...entry,
+            receipt: {
+              ...entry.receipt,
+              ...patch,
+            },
+          };
         });
-        await worker.setParameters({
-          tessedit_pageseg_mode: PSM.SINGLE_COLUMN,
-        });
 
-        const {
-          data: { text },
-        } = await worker.recognize(file);
-        await worker.terminate();
-
-        const parsed = parseReceiptText(text, "image");
-        setReceipt(parsed);
-        saveToHistory(parsed);
-      } catch (err) {
-        console.error("[OCR] Error:", err);
-        setError(
-          "Não foi possível ler a imagem. Tente uma captura de tela mais nítida."
-        );
-      } finally {
-        setLoading(false);
-        setProgress(null);
-        setStatusMessage("");
-      }
+        if (!updated) return prev;
+        try {
+          localStorage.setItem(HISTORY_KEY, JSON.stringify(next));
+        } catch {
+          // ignore storage errors
+        }
+        return next;
+      });
     },
-    [saveToHistory]
+    []
   );
 
-  const processPdfFile = useCallback(
-    async (file: File) => {
-      setError(null);
-      setLoading(true);
-      setProgress(null);
-      setStatusMessage("Extraindo dados do PDF...");
+  const getCandidateNamesForClienteId = useCallback(
+    (clienteId: string): string[] => {
+      const found = clientes.find((c) => c.id === clienteId);
+      if (!found) return [];
+      return [
+        found.nome_loja,
+        ...(found.nomes_comprovante ?? []),
+        ...(found.nomes_relatorio ?? []),
+      ].filter(Boolean);
+    },
+    [clientes]
+  );
 
-      try {
-        const formData = new FormData();
-        formData.append("file", file);
+  const recheckItemAgainstReportAndDb = useCallback(
+    async (updatedItem: BulkReceiptItem) => {
+      const candidateNames = getCandidateNamesForClienteId(
+        updatedItem.selectedClienteId
+      );
+      const { duplicateDbKeys, matchedRelatorios } =
+        await comprovantesService.inspectReceiptCandidates([
+          {
+            key: updatedItem.id,
+            idTransacao: updatedItem.idTransacao,
+            dataTransacao: updatedItem.dataTransacao,
+            horaTransacao: updatedItem.horaTransacao,
+            valor: updatedItem.valor,
+            nomeComprovante: updatedItem.nomeComprovante,
+            candidateNames,
+          },
+        ]);
 
-        const res = await fetch("/api/parse-pdf", {
-          method: "POST",
-          body: formData,
-        });
-        const data = (await res.json()) as {
-          receipt?: ParsedReceipt;
-          error?: string;
+      const isDupDb = duplicateDbKeys.has(updatedItem.id);
+      const matchedRel = matchedRelatorios.get(updatedItem.id);
+
+      setBulkItems((prev) =>
+        prev.map((row) => {
+          if (row.id !== updatedItem.id) return row;
+          const sameMatchedRelId =
+            row.matchedRelatorio?.relatorioId &&
+            row.matchedRelatorio.relatorioId === matchedRel?.relatorioId;
+
+          return {
+            ...row,
+            status: isDupDb ? "duplicate_db" : row.status,
+            selected: isDupDb ? false : row.selected,
+            reportDate: matchedRel?.dataTransacao,
+            matchedRelatorio: matchedRel,
+            confirmRelatorioLink: matchedRel
+              ? sameMatchedRelId
+                ? row.confirmRelatorioLink
+                : null
+              : null,
+          };
+        })
+      );
+    },
+    [getCandidateNamesForClienteId]
+  );
+
+  const finalizeParsedResults = useCallback(
+    async (
+      rawResults: Array<{
+        fileName: string;
+        receipt?: ParsedReceipt;
+        errorMessage?: string;
+        existingHistoryId?: string;
+      }>
+    ) => {
+      const baseTimestamp = Date.now();
+      const draftItems = rawResults.map((res, idx) => {
+        const itemId = `${baseTimestamp}-${idx}`;
+        if (!res.receipt) {
+          return {
+            itemId,
+            res,
+            defaults: null,
+            suggestedClienteId: "",
+            candidateNames: [] as string[],
+          };
+        }
+        const defaults = buildComprovanteDefaults(res.receipt);
+        const matched = suggestClientesForReceipt(
+          res.receipt.payerName,
+          clientes
+        );
+        const suggestedCliente = matched[0]?.cliente;
+        const candidateNames = suggestedCliente
+          ? [
+              suggestedCliente.nome_loja,
+              ...(suggestedCliente.nomes_comprovante ?? []),
+              ...(suggestedCliente.nomes_relatorio ?? []),
+            ].filter(Boolean)
+          : [];
+        return {
+          itemId,
+          res,
+          defaults,
+          suggestedClienteId: suggestedCliente?.id ?? "",
+          candidateNames,
         };
+      });
 
-        if (!res.ok || !data.receipt) {
-          throw new Error(data.error || "Erro ao processar PDF.");
+      const lookupCandidates = draftItems
+        .filter((d) => d.defaults !== null)
+        .map((d) => ({
+          key: d.itemId,
+          idTransacao: d.defaults!.id_transacao.trim(),
+          dataTransacao: d.defaults!.data_transacao,
+          horaTransacao: d.defaults!.hora_transacao,
+          valor: d.defaults!.valor,
+          nomeComprovante: d.defaults!.nome_comprovante,
+          candidateNames: d.candidateNames,
+        }));
+
+      const { duplicateDbKeys, matchedRelatorios, error: inspectError } =
+        await comprovantesService.inspectReceiptCandidates(lookupCandidates);
+
+      if (inspectError) {
+        setBulkError(inspectError);
+      }
+
+      const acceptedInBatch: Array<{
+        idTransacao: string;
+        dataTransacao: string;
+        horaTransacao: string;
+        valor: string;
+        nomeComprovante: string;
+      }> = [];
+
+      const builtItems: BulkReceiptItem[] = draftItems.map((draft) => {
+        const { itemId, res, defaults, suggestedClienteId } = draft;
+        if (!res.receipt || !defaults) {
+          return {
+            id: itemId,
+            historyId: res.existingHistoryId,
+            fileName: res.fileName,
+            status: "error",
+            errorMessage: res.errorMessage || "Falha na leitura.",
+            selected: false,
+            selectedClienteId: "",
+            reportDate: undefined,
+            matchedRelatorio: undefined,
+            confirmRelatorioLink: null,
+            nomeComprovante: "",
+            valor: "",
+            dataTransacao: "",
+            horaTransacao: "",
+            idTransacao: "",
+            bancoPagador: "",
+          };
         }
 
-        setReceipt(data.receipt);
-        saveToHistory(data.receipt);
-      } catch (err) {
-        setError(
-          err instanceof Error ? err.message : "Erro ao processar o PDF."
+        const txId = defaults.id_transacao.trim();
+        let status: BulkReceiptItem["status"] = "new";
+
+        const isDupInBatch = acceptedInBatch.some((prev) =>
+          isSameReceiptComposite(prev, {
+            idTransacao: txId,
+            dataTransacao: defaults.data_transacao,
+            horaTransacao: defaults.hora_transacao,
+            valor: defaults.valor,
+            nomeComprovante: defaults.nome_comprovante,
+          })
         );
-      } finally {
-        setLoading(false);
-        setStatusMessage("");
-      }
+
+        if (duplicateDbKeys.has(itemId)) {
+          status = "duplicate_db";
+        } else if (isDupInBatch) {
+          status = "duplicate_batch";
+        } else {
+          acceptedInBatch.push({
+            idTransacao: txId,
+            dataTransacao: defaults.data_transacao,
+            horaTransacao: defaults.hora_transacao,
+            valor: defaults.valor,
+            nomeComprovante: defaults.nome_comprovante,
+          });
+        }
+
+        // Only save to "Últimos comprovantes lidos" if not a duplicate (and deduplicate inside saveToHistory)
+        const historyId =
+          res.existingHistoryId ||
+          (status === "new" ? saveToHistory(res.receipt) : undefined);
+
+        const matchedRel = matchedRelatorios.get(itemId);
+
+        return {
+          id: itemId,
+          historyId,
+          fileName: res.fileName,
+          status,
+          receipt: res.receipt,
+          selected: status === "new",
+          selectedClienteId: suggestedClienteId,
+          reportDate: matchedRel?.dataTransacao,
+          matchedRelatorio: matchedRel,
+          confirmRelatorioLink: matchedRel ? null : null,
+          nomeComprovante: defaults.nome_comprovante,
+          valor: defaults.valor,
+          dataTransacao: defaults.data_transacao,
+          horaTransacao: defaults.hora_transacao,
+          idTransacao: txId,
+          bancoPagador: defaults.banco_pagador,
+        };
+      });
+
+      setBulkItems(builtItems);
     },
-    [saveToHistory]
+    [clientes, saveToHistory]
+  );
+
+  const processSingleParsedReceipt = useCallback(
+    async (
+      parsed: ParsedReceipt,
+      fileName: string,
+      existingHistoryId?: string
+    ) => {
+      setBulkError(null);
+      await finalizeParsedResults([
+        { fileName, receipt: parsed, existingHistoryId },
+      ]);
+    },
+    [finalizeParsedResults]
   );
 
   const processUrl = useCallback(
     async (url: string) => {
       setError(null);
+      setBulkError(null);
+      setBulkItems([]);
       setLoading(true);
       setProgress(null);
       setStatusMessage("Buscando comprovante pelo link...");
@@ -366,8 +839,7 @@ export function ReceiptReader() {
           throw new Error(data.error || "Erro ao ler o link.");
         }
 
-        setReceipt(data.receipt);
-        saveToHistory(data.receipt);
+        await processSingleParsedReceipt(data.receipt, "Comprovante via link");
       } catch (err) {
         setError(
           err instanceof Error
@@ -379,27 +851,13 @@ export function ReceiptReader() {
         setStatusMessage("");
       }
     },
-    [saveToHistory]
-  );
-
-  const handleFileSelected = useCallback(
-    async (file: File) => {
-      if (isPdfFile(file)) {
-        await processPdfFile(file);
-      } else if (isImageFile(file)) {
-        await processImageFile(file);
-      } else {
-        setError("Formato não suportado. Envie uma imagem, PDF ou .zip.");
-      }
-    },
-    [processImageFile, processPdfFile]
+    [processSingleParsedReceipt]
   );
 
   const processBulkFiles = useCallback(
     async (inputFiles: File[]) => {
       setError(null);
       setBulkError(null);
-      setReceipt(null);
       setBulkItems([]);
       setLoading(true);
       setProgress(0);
@@ -442,20 +900,12 @@ export function ReceiptReader() {
           return;
         }
 
-        // If a .zip had just 1 file inside, use the single-receipt flow
-        if (extractedFiles.length === 1) {
-          setLoading(false);
-          setProgress(null);
-          setStatusMessage("");
-          await handleFileSelected(extractedFiles[0]);
-          return;
-        }
+        let ocrWorker: Awaited<
+          ReturnType<typeof import("tesseract.js")["createWorker"]>
+        > | null = null;
 
-        const hasImages = extractedFiles.some((f) => isImageFile(f));
-        let ocrWorker: Awaited<ReturnType<typeof import("tesseract.js")["createWorker"]>> | null =
-          null;
-
-        if (hasImages) {
+        const getOcrWorker = async () => {
+          if (ocrWorker) return ocrWorker;
           setStatusMessage("Carregando motor OCR em português...");
           const { createWorker, PSM } = await import("tesseract.js");
           ocrWorker = await createWorker("por", 1, {
@@ -464,6 +914,11 @@ export function ReceiptReader() {
           await ocrWorker.setParameters({
             tessedit_pageseg_mode: PSM.SINGLE_COLUMN,
           });
+          return ocrWorker;
+        };
+
+        if (extractedFiles.some((f) => isImageFile(f))) {
+          await getOcrWorker();
         }
 
         const rawResults: Array<{
@@ -490,9 +945,30 @@ export function ReceiptReader() {
                 });
                 const data = (await res.json()) as {
                   receipt?: ParsedReceipt;
+                  needsOcr?: boolean;
+                  images?: string[];
                   error?: string;
                 };
-                if (!res.ok || !data.receipt) {
+                if (!res.ok) {
+                  rawResults.push({
+                    fileName: current.name,
+                    errorMessage: data.error || "Erro ao ler PDF.",
+                  });
+                } else if (data.needsOcr && data.images && data.images.length > 0) {
+                  const worker = await getOcrWorker();
+                  const pageTexts: string[] = [];
+                  for (const imgUrl of data.images) {
+                    const {
+                      data: { text },
+                    } = await worker.recognize(imgUrl);
+                    if (text) pageTexts.push(text);
+                  }
+                  const parsed = parseReceiptText(pageTexts.join("\n"), "pdf");
+                  rawResults.push({
+                    fileName: current.name,
+                    receipt: parsed,
+                  });
+                } else if (!data.receipt) {
                   rawResults.push({
                     fileName: current.name,
                     errorMessage: data.error || "Erro ao ler PDF.",
@@ -503,10 +979,11 @@ export function ReceiptReader() {
                     receipt: data.receipt,
                   });
                 }
-              } else if (ocrWorker) {
+              } else {
+                const worker = await getOcrWorker();
                 const {
                   data: { text },
-                } = await ocrWorker.recognize(current);
+                } = await worker.recognize(current);
                 const parsed = parseReceiptText(text, "image");
                 rawResults.push({
                   fileName: current.name,
@@ -529,76 +1006,7 @@ export function ReceiptReader() {
           }
         }
 
-        const txIds = rawResults
-          .map((r) => r.receipt?.transactionId?.trim() || "")
-          .filter(Boolean);
-
-        const { existingIds, error: checkError } =
-          await comprovantesService.findExistingTransactionIds(txIds);
-
-        if (checkError) {
-          setBulkError(
-            `Aviso ao verificar duplicidades no banco: ${checkError}`
-          );
-        }
-
-        const seenInBatch = new Set<string>();
-        const builtItems: BulkReceiptItem[] = rawResults.map((res, idx) => {
-          const itemId = `${Date.now()}-${idx}`;
-          if (!res.receipt) {
-            return {
-              id: itemId,
-              fileName: res.fileName,
-              status: "error",
-              errorMessage: res.errorMessage || "Falha na leitura.",
-              selected: false,
-              selectedClienteId: "",
-              nomeComprovante: "",
-              valor: "",
-              dataTransacao: "",
-              horaTransacao: "",
-              idTransacao: "",
-              bancoPagador: "",
-            };
-          }
-
-          const defaults = buildComprovanteDefaults(res.receipt);
-          const txId = defaults.id_transacao.trim();
-          let status: BulkReceiptItem["status"] = "new";
-
-          if (txId) {
-            if (existingIds.has(txId)) {
-              status = "duplicate_db";
-            } else if (seenInBatch.has(txId)) {
-              status = "duplicate_batch";
-            } else {
-              seenInBatch.add(txId);
-            }
-          }
-
-          const matched = suggestClientesForReceipt(
-            res.receipt.payerName,
-            clientes
-          );
-
-          return {
-            id: itemId,
-            fileName: res.fileName,
-            status,
-            receipt: res.receipt,
-            selected: status === "new",
-            selectedClienteId: matched[0]?.cliente.id ?? "",
-            suggestionReason: matched[0]?.matchedBy,
-            nomeComprovante: defaults.nome_comprovante,
-            valor: defaults.valor,
-            dataTransacao: defaults.data_transacao,
-            horaTransacao: defaults.hora_transacao,
-            idTransacao: txId,
-            bancoPagador: defaults.banco_pagador,
-          };
-        });
-
-        setBulkItems(builtItems);
+        await finalizeParsedResults(rawResults);
       } catch (err) {
         console.error("[Bulk] Error:", err);
         setError("Não foi possível processar os arquivos enviados.");
@@ -608,23 +1016,16 @@ export function ReceiptReader() {
         setStatusMessage("");
       }
     },
-    [clientes, handleFileSelected]
+    [finalizeParsedResults]
   );
 
   const handleFilesInput = useCallback(
     async (fileList: FileList | File[]) => {
       const files = Array.from(fileList);
       if (files.length === 0) return;
-
-      if (files.length === 1 && !isZipFile(files[0])) {
-        setBulkItems([]);
-        await handleFileSelected(files[0]);
-        return;
-      }
-
       await processBulkFiles(files);
     },
-    [handleFileSelected, processBulkFiles]
+    [processBulkFiles]
   );
 
   // Check if opened via Web Share Target
@@ -651,7 +1052,7 @@ export function ReceiptReader() {
           const file = new File([payload.file.buffer], payload.file.name, {
             type: payload.file.type,
           });
-          await handleFileSelected(file);
+          await processBulkFiles([file]);
           return;
         }
 
@@ -668,8 +1069,7 @@ export function ReceiptReader() {
 
         if (payload.text) {
           const parsed = parseReceiptText(payload.text, "text");
-          setReceipt(parsed);
-          saveToHistory(parsed);
+          await processSingleParsedReceipt(parsed, "Texto compartilhado");
         }
       })();
       return;
@@ -685,11 +1085,10 @@ export function ReceiptReader() {
         void processUrl(possibleUrl);
       } else if (queryText) {
         const parsed = parseReceiptText(queryText, "text");
-        setReceipt(parsed);
-        saveToHistory(parsed);
+        void processSingleParsedReceipt(parsed, "Texto compartilhado");
       }
     }
-  }, [handleFileSelected, processUrl, saveToHistory]);
+  }, [processBulkFiles, processSingleParsedReceipt, processUrl]);
 
   const handleLinkSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -702,19 +1101,7 @@ export function ReceiptReader() {
     } else {
       // Treat as pasted receipt text
       const parsed = parseReceiptText(trimmed, "text");
-      setReceipt(parsed);
-      saveToHistory(parsed);
-    }
-  };
-
-  const handleCopy = async (label: string, value: string | null) => {
-    if (!value) return;
-    try {
-      await navigator.clipboard.writeText(value);
-      setCopiedField(label);
-      setTimeout(() => setCopiedField(null), 1800);
-    } catch {
-      // ignore clipboard error
+      await processSingleParsedReceipt(parsed, "Texto colado");
     }
   };
 
@@ -725,7 +1112,9 @@ export function ReceiptReader() {
         setLinkInput(text.trim());
       }
     } catch {
-      setError("Não foi possível acessar a área de transferência. Cole manualmente no campo.");
+      setError(
+        "Não foi possível acessar a área de transferência. Cole manualmente no campo."
+      );
     }
   };
 
@@ -733,6 +1122,8 @@ export function ReceiptReader() {
     setHistory([]);
     localStorage.removeItem(HISTORY_KEY);
   };
+
+  const newItemsCount = bulkItems.filter((item) => item.status === "new").length;
 
   return (
     <div className="mx-auto flex w-full max-w-5xl flex-col gap-5 px-4 py-6 pb-16">
@@ -758,535 +1149,154 @@ export function ReceiptReader() {
         </div>
       )}
 
-      {/* Header */}
+      {/* Header and upload */}
       <Card className="overflow-hidden">
-        <CardHeader className="border-b border-border p-5">
+        <CardHeader className="p-5">
           <CardTitle className="text-base font-bold uppercase tracking-wide text-primary">
             Leitor de Comprovantes PIX
           </CardTitle>
-          <CardDescription>
-            Importe comprovantes por arquivo, link ou compartilhamento.
-          </CardDescription>
         </CardHeader>
-      </Card>
-
-      {/* Upload & Link Input Area */}
-      <section className="rounded-3xl border border-border bg-card p-4 shadow-sm">
-        <input
-          ref={fileInputRef}
-          type="file"
-          multiple
-          accept="image/*,application/pdf,.pdf,.zip,application/zip,application/x-zip-compressed"
-          className="hidden"
-          onChange={(e) => {
-            if (e.target.files && e.target.files.length > 0) {
-              void handleFilesInput(e.target.files);
-            }
-            e.target.value = "";
-          }}
-        />
-
-        <div className="flex flex-col gap-3">
-          <button
-            type="button"
-            disabled={loading}
-            onClick={() => fileInputRef.current?.click()}
-            onDragOver={(e) => {
-              e.preventDefault();
-              e.stopPropagation();
-              if (!loading) setIsDragging(true);
-            }}
-            onDragEnter={(e) => {
-              e.preventDefault();
-              e.stopPropagation();
-              if (!loading) setIsDragging(true);
-            }}
-            onDragLeave={(e) => {
-              e.preventDefault();
-              e.stopPropagation();
-              setIsDragging(false);
-            }}
-            onDrop={(e) => {
-              e.preventDefault();
-              e.stopPropagation();
-              setIsDragging(false);
-              if (loading) return;
-              if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
-                void handleFilesInput(e.dataTransfer.files);
+        <CardContent className="space-y-4 border-t border-border p-5">
+          <input
+            ref={fileInputRef}
+            type="file"
+            multiple
+            accept="image/*,application/pdf,.pdf,.zip,application/zip,application/x-zip-compressed"
+            className="hidden"
+            onChange={(e) => {
+              if (e.target.files && e.target.files.length > 0) {
+                void handleFilesInput(e.target.files);
               }
+              e.target.value = "";
             }}
-            className={`flex flex-col items-center justify-center gap-1 rounded-2xl border-2 border-dashed px-4 py-5 text-sm font-semibold transition disabled:opacity-50 ${
-              isDragging
-                ? "border-primary bg-primary/10 text-primary"
-                : "border-blue-300 bg-blue-50/50 text-blue-900 hover:border-blue-500 hover:bg-blue-50"
-            }`}
-          >
-            <div className="flex items-center gap-2">
-              <Upload className="h-5 w-5 text-blue-800" />
-              <span>
-                {isDragging
-                  ? "Solte os arquivos aqui..."
-                  : "Solte ou clique para enviar Foto, PDF ou .zip"}
-              </span>
-            </div>
-            <span className="text-xs font-normal text-muted-foreground">
-              Suporta envio único ou em lote (várias imagens/PDFs ou arquivo .zip)
-            </span>
-          </button>
+          />
 
-          <form onSubmit={handleLinkSubmit} className="flex flex-col gap-2.5">
-            <div className="flex gap-2">
-              <div className="relative flex-1">
-                <Link2 className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
-                <input
-                  type="text"
-                  value={linkInput}
-                  onChange={(e) => setLinkInput(e.target.value)}
-                  placeholder="Cole o link ou texto do recibo..."
-                  className="w-full rounded-2xl border border-slate-200 bg-slate-50 pl-9 pr-3 py-3 text-sm text-slate-900 placeholder:text-slate-400 focus:border-blue-700 focus:bg-white focus:outline-none"
-                />
-              </div>
-              <button
-                type="button"
-                onClick={handlePaste}
-                disabled={loading}
-                className="inline-flex shrink-0 items-center gap-1.5 rounded-2xl border border-blue-200 bg-blue-50 px-3.5 py-3 text-sm font-semibold text-blue-900 transition hover:bg-blue-100 active:scale-95 disabled:opacity-40"
-                title="Colar da área de transferência"
-              >
-                <ClipboardPaste className="h-4 w-4" />
-                <span>Colar</span>
-              </button>
-            </div>
-
-            <button
-              type="submit"
-              disabled={loading || !linkInput.trim()}
-              className="w-full rounded-2xl bg-blue-900 px-4 py-3 text-sm font-semibold text-white shadow-sm transition hover:bg-blue-950 active:scale-[0.99] disabled:opacity-40"
-            >
-              Ler comprovante
-            </button>
-          </form>
-        </div>
-
-        {/* Loading State */}
-        {loading && (
-          <div className="mt-4 flex flex-col gap-2 rounded-2xl bg-slate-50 p-3.5">
-            <div className="flex items-center gap-2.5 text-sm font-medium text-slate-700">
-              <Loader2 className="h-4 w-4 animate-spin text-blue-800" />
-              <span>{statusMessage || "Processando comprovante..."}</span>
-              {progress !== null && (
-                <span className="ml-auto font-mono text-xs font-bold text-blue-900">
-                  {progress}%
-                </span>
-              )}
-            </div>
-            {progress !== null && (
-              <div className="h-2 w-full overflow-hidden rounded-full bg-slate-200">
-                <div
-                  className="h-full rounded-full bg-blue-800 transition-all duration-200"
-                  style={{ width: `${progress}%` }}
-                />
-              </div>
-            )}
-          </div>
-        )}
-
-        {/* Error State */}
-        {error && (
-          <div className="mt-4 rounded-2xl border border-red-200 bg-red-50 p-3.5 text-sm text-red-700">
-            {error}
-          </div>
-        )}
-      </section>
-
-      {/* Parsed Receipt Result */}
-      {receipt && (
-        <section className="overflow-hidden rounded-3xl border border-slate-200 bg-white shadow-md">
-          {/* Top Highlight Banner */}
-          <div className="bg-blue-900 p-5 text-white">
-            {/* Payer Name Hero */}
-            <div>
-              <p className="text-xs font-medium uppercase tracking-wider text-blue-200/80">
-                Pagador
-              </p>
-              <div className="mt-1 flex items-center justify-between gap-2">
-                <h2 className="text-2xl font-bold leading-tight">
-                  {receipt.payerName || "Nome não identificado"}
-                </h2>
-                {(receipt.payerName || receipt.amount) && (
-                  <button
-                    type="button"
-                    onClick={() => {
-                      const numericAmount = (receipt.amount || "")
-                        .replace(/R\$\s*/gi, "")
-                        .trim();
-                      void handleCopy(
-                        "payerName",
-                        `${receipt.payerName || ""}\t${numericAmount}`
-                      );
-                    }}
-                    className="shrink-0 inline-flex items-center gap-1.5 rounded-xl bg-white/15 px-3 py-2 text-xs font-semibold text-white transition hover:bg-white/25"
-                    title="Copiar"
-                  >
-                    {copiedField === "payerName" ? (
-                      <>
-                        <Check className="h-4 w-4" />
-                        <span>Copiado!</span>
-                      </>
-                    ) : (
-                      <>
-                        <Copy className="h-4 w-4" />
-                        <span>Copiar</span>
-                      </>
-                    )}
-                  </button>
-                )}
-              </div>
-            </div>
-          </div>
-
-          {/* Payer Details Grid: Valor, Data e Hora, Banco, ID Transação */}
-          <div className="grid grid-cols-1 gap-3 p-5 sm:grid-cols-2">
-            <DetailBox label="Valor" value={receipt.amount} />
-            <DetailBox label="Data e Hora" value={receipt.dateTime} />
-            <DetailBox label="Banco / Instituição" value={receipt.payerBank} />
-            <DetailBox
-              label="ID da Transação (E2E)"
-              value={receipt.transactionId}
-              mono
-              onCopy={
-                receipt.transactionId
-                  ? () => void handleCopy("transactionId", receipt.transactionId || "")
-                  : undefined
-              }
-              copied={copiedField === "transactionId"}
-            />
-          </div>
-
-          {/* Collapsible Receiver Details */}
-          <div className="border-t border-slate-100">
+          <div className="flex flex-col gap-3">
             <button
               type="button"
-              onClick={() => setShowReceiver((v) => !v)}
-              className="flex w-full items-center justify-between px-5 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-500 hover:bg-slate-50"
+              disabled={loading}
+              onClick={() => fileInputRef.current?.click()}
+              onDragOver={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                if (!loading) setIsDragging(true);
+              }}
+              onDragEnter={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                if (!loading) setIsDragging(true);
+              }}
+              onDragLeave={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                setIsDragging(false);
+              }}
+              onDrop={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                setIsDragging(false);
+                if (loading) return;
+                if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+                  void handleFilesInput(e.dataTransfer.files);
+                }
+              }}
+              className={`flex flex-col items-center justify-center gap-1 rounded-2xl border-2 border-dashed px-4 py-5 text-sm font-semibold transition disabled:opacity-50 ${
+                isDragging
+                  ? "border-primary bg-primary/10 text-primary"
+                  : "border-blue-300 bg-blue-50/50 text-blue-900 hover:border-blue-500 hover:bg-blue-50"
+              }`}
             >
-              <span>Recebedor</span>
-              {showReceiver ? (
-                <ChevronUp className="h-4 w-4" />
-              ) : (
-                <ChevronDown className="h-4 w-4" />
-              )}
-            </button>
-            {showReceiver && (
-              <div className="grid grid-cols-1 gap-3 px-5 pb-4 sm:grid-cols-2">
-                <DetailBox label="Nome" value={receipt.receiverName} />
-                <DetailBox label="CPF / CNPJ" value={receipt.receiverDocument} />
-                <DetailBox label="Banco" value={receipt.receiverBank} />
-                <DetailBox label="Chave Pix" value={receipt.pixKey} />
-              </div>
-            )}
-          </div>
-        </section>
-      )}
-
-      {/* Confirm & Save Receipt to Supabase */}
-      {receipt && (
-        <Card className="border-primary/20">
-          <CardHeader>
-            <div className="flex flex-wrap items-center justify-between gap-2">
               <div className="flex items-center gap-2">
-                <Database className="h-4 w-4 text-primary" />
-                <CardTitle className="text-base">
-                  Confirmar e salvar comprovante
-                </CardTitle>
+                <Upload className="h-5 w-5 text-blue-800" />
+                <span>
+                  {isDragging
+                    ? "Solte os arquivos aqui..."
+                    : "Envie os comprovantes"}
+                </span>
               </div>
-              <Badge variant="secondary">pix.comprovantes</Badge>
-            </div>
-            <CardDescription>
-              Será salvo com status{" "}
-              <span className="font-medium text-foreground">
-                aguardando_relatorio
-              </span>{" "}
-              vinculado ao cliente selecionado.
-            </CardDescription>
-          </CardHeader>
+              <span className="text-xs font-normal text-muted-foreground">
+                Você pode enviar várias imagens e PDFs de uma só vez, ou até
+                mesmo uma pasta zipada de comprovantes
+              </span>
+            </button>
 
-          <CardContent className="space-y-4">
-            {/* Client Suggestion & Selection */}
-            <div className="space-y-2 rounded-xl border border-border bg-secondary/40 p-3.5">
-              <div className="flex flex-wrap items-center justify-between gap-2">
-                <Label htmlFor="cliente-select" className="flex items-center gap-1.5">
-                  <UserCheck className="h-4 w-4 text-primary" />
-                  Cliente vinculado *
-                </Label>
-                {suggestions.length > 0 ? (
-                  <Badge variant="success">Sugestão automática encontrada</Badge>
-                ) : (
-                  <Badge variant="warning">Seleção manual necessária</Badge>
+            <form onSubmit={handleLinkSubmit} className="flex flex-col gap-2.5">
+              <div className="flex gap-2">
+                <div className="relative flex-1">
+                  <Link2 className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+                  <input
+                    type="text"
+                    value={linkInput}
+                    onChange={(e) => setLinkInput(e.target.value)}
+                    placeholder="Cole o link ou texto do recibo..."
+                    className="w-full rounded-2xl border border-slate-200 bg-slate-50 pl-9 pr-3 py-3 text-sm text-slate-900 placeholder:text-slate-400 focus:border-blue-700 focus:bg-white focus:outline-none"
+                  />
+                </div>
+                <button
+                  type="button"
+                  onClick={handlePaste}
+                  disabled={loading}
+                  className="inline-flex shrink-0 items-center gap-1.5 rounded-2xl border border-blue-200 bg-blue-50 px-3.5 py-3 text-sm font-semibold text-blue-900 transition hover:bg-blue-100 active:scale-95 disabled:opacity-40"
+                  title="Colar da área de transferência"
+                >
+                  <ClipboardPaste className="h-4 w-4" />
+                  <span>Colar</span>
+                </button>
+              </div>
+
+              <button
+                type="submit"
+                disabled={loading || !linkInput.trim()}
+                className="w-full rounded-2xl bg-blue-900 px-4 py-3 text-sm font-semibold text-white shadow-sm transition hover:bg-blue-950 active:scale-[0.99] disabled:opacity-40"
+              >
+                Ler comprovante
+              </button>
+            </form>
+          </div>
+
+          {/* Loading State */}
+          {loading && (
+            <div className="mt-4 flex flex-col gap-2 rounded-2xl bg-slate-50 p-3.5">
+              <div className="flex items-center gap-2.5 text-sm font-medium text-slate-700">
+                <Loader2 className="h-4 w-4 animate-spin text-blue-800" />
+                <span>{statusMessage || "Processando comprovante..."}</span>
+                {progress !== null && (
+                  <span className="ml-auto font-mono text-xs font-bold text-blue-900">
+                    {progress}%
+                  </span>
                 )}
               </div>
-
-              {suggestions.length > 0 && (
-                <div className="flex flex-wrap gap-1.5">
-                  {suggestions.map((item) => {
-                    const isSelected = selectedClienteId === item.cliente.id;
-                    return (
-                      <button
-                        key={item.cliente.id}
-                        type="button"
-                        onClick={() => setSelectedClienteId(item.cliente.id)}
-                        className={`rounded-lg border px-2.5 py-1.5 text-left text-xs transition ${
-                          isSelected
-                            ? "border-primary bg-primary text-primary-foreground"
-                            : "border-border bg-card text-foreground hover:bg-accent"
-                        }`}
-                      >
-                        <span className="block font-semibold">
-                          {item.cliente.nome_loja}
-                        </span>
-                        <span
-                          className={`block text-[11px] ${
-                            isSelected
-                              ? "text-primary-foreground/80"
-                              : "text-muted-foreground"
-                          }`}
-                        >
-                          {item.matchedBy}
-                        </span>
-                      </button>
-                    );
-                  })}
+              {progress !== null && (
+                <div className="h-2 w-full overflow-hidden rounded-full bg-slate-200">
+                  <div
+                    className="h-full rounded-full bg-blue-800 transition-all duration-200"
+                    style={{ width: `${progress}%` }}
+                  />
                 </div>
               )}
-
-              <div className="relative">
-                <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-                <Input
-                  value={clientSearch}
-                  onChange={(e) => setClientSearch(e.target.value)}
-                  placeholder="Filtrar cliente por loja ou nome no Pix..."
-                  className="pl-10"
-                />
-              </div>
-
-              <select
-                id="cliente-select"
-                value={selectedClienteId}
-                onChange={(e) => setSelectedClienteId(e.target.value)}
-                className="flex h-10 w-full rounded-xl border border-input bg-card px-3 py-2 text-sm text-foreground shadow-xs transition-colors focus-visible:border-ring focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/20"
-              >
-                <option value="">
-                  {clientesLoaded
-                    ? "Selecione um cliente..."
-                    : "Carregando clientes..."}
-                </option>
-                {clientes
-                  .filter((c) => {
-                    const q = clientSearch.trim().toLowerCase();
-                    if (!q) return true;
-                    return [
-                      c.nome_loja,
-                      ...(c.nomes_comprovante ?? []),
-                      ...(c.nomes_relatorio ?? []),
-                    ]
-                      .join(" ")
-                      .toLowerCase()
-                      .includes(q);
-                  })
-                  .map((c) => (
-                    <option key={c.id} value={c.id}>
-                      {c.nome_loja}
-                    </option>
-                  ))}
-              </select>
-
-              {!selectedClienteId && (
-                <p className="text-xs font-medium text-amber-700">
-                  Não é possível salvar um comprovante sem vincular a um cliente.
-                </p>
-              )}
             </div>
+          )}
 
-            {/* Editable Receipt Fields */}
-            <div className="grid gap-3 sm:grid-cols-2">
-              <div className="space-y-1.5 sm:col-span-2">
-                <Label htmlFor="save-nome">Nome no comprovante *</Label>
-                <Input
-                  id="save-nome"
-                  value={draftNomeComprovante}
-                  onChange={(e) => setDraftNomeComprovante(e.target.value)}
-                  placeholder="Nome do pagador no Pix"
-                />
-              </div>
-
-              <div className="space-y-1.5">
-                <Label htmlFor="save-valor">Valor (R$) *</Label>
-                <Input
-                  id="save-valor"
-                  type="number"
-                  step="0.01"
-                  min="0.01"
-                  value={draftValor}
-                  onChange={(e) => setDraftValor(e.target.value)}
-                  placeholder="0.00"
-                />
-              </div>
-
-              <div className="space-y-1.5">
-                <Label htmlFor="save-banco">Banco pagador</Label>
-                <Input
-                  id="save-banco"
-                  value={draftBancoPagador}
-                  onChange={(e) => setDraftBancoPagador(e.target.value)}
-                  placeholder="Ex.: Nubank, PicPay..."
-                />
-              </div>
-
-              <div className="space-y-1.5">
-                <Label htmlFor="save-data">Data da transação *</Label>
-                <Input
-                  id="save-data"
-                  type="date"
-                  value={draftData}
-                  onChange={(e) => setDraftData(e.target.value)}
-                />
-              </div>
-
-              <div className="space-y-1.5">
-                <Label htmlFor="save-hora">Hora da transação</Label>
-                <Input
-                  id="save-hora"
-                  type="time"
-                  value={draftHora}
-                  onChange={(e) => setDraftHora(e.target.value)}
-                />
-              </div>
-
-              <div className="space-y-1.5 sm:col-span-2">
-                <Label htmlFor="save-e2e">ID da transação (E2E)</Label>
-                <Input
-                  id="save-e2e"
-                  value={draftIdTransacao}
-                  onChange={(e) => setDraftIdTransacao(e.target.value)}
-                  placeholder="E00000000..."
-                  className="font-mono text-xs"
-                />
-              </div>
+          {/* Error State */}
+          {error && (
+            <div className="mt-4 rounded-2xl border border-red-200 bg-red-50 p-3.5 text-sm text-red-700">
+              {error}
             </div>
+          )}
+        </CardContent>
+      </Card>
 
-            {saveDbError && (
-              <div className="rounded-xl border border-red-200 bg-red-50 px-3 py-2.5 text-sm text-red-700">
-                {saveDbError}
-              </div>
-            )}
-
-            <Button
-              type="button"
-              disabled={savingDb || !selectedClienteId}
-              className="w-full"
-              onClick={async () => {
-                setSaveDbError(null);
-
-                const nomeComprovante = draftNomeComprovante.trim();
-                const valorNum = Number(draftValor.replace(",", "."));
-
-                if (!selectedClienteId) {
-                  setSaveDbError("Selecione um cliente para vincular o comprovante.");
-                  return;
-                }
-                if (!nomeComprovante) {
-                  setSaveDbError("Informe o nome no comprovante.");
-                  return;
-                }
-                if (!Number.isFinite(valorNum) || valorNum <= 0) {
-                  setSaveDbError("Informe um valor válido maior que zero.");
-                  return;
-                }
-                if (!draftData) {
-                  setSaveDbError("Informe a data da transação.");
-                  return;
-                }
-
-                setSavingDb(true);
-                const { data, error: insertError, reconciled } =
-                  await comprovantesService.save({
-                    id_cliente: selectedClienteId,
-                    nome_comprovante: nomeComprovante,
-                    valor: Number(valorNum.toFixed(2)),
-                    data_transacao: draftData,
-                    hora_transacao: draftHora || null,
-                    id_transacao: draftIdTransacao.trim() || null,
-                    banco_pagador: draftBancoPagador.trim() || null,
-                    nome_recebedor: receipt.receiverName || null,
-                    cpf_cnpj_pagador: receipt.payerDocument || null,
-                    status: "aguardando_relatorio",
-                    confianca_ocr: receipt.confidence || null,
-                  });
-                setSavingDb(false);
-
-                if (insertError || !data) {
-                  setSaveDbError(
-                    insertError || "Não foi possível salvar o comprovante."
-                  );
-                  return;
-                }
-
-                const clienteNome =
-                  clientes.find((c) => c.id === selectedClienteId)?.nome_loja ||
-                  "cliente selecionado";
-                setSaveModalResult({
-                  open: true,
-                  title: "Comprovante salvo com sucesso!",
-                  description: `Vinculado ao cliente ${clienteNome}.`,
-                  reconciledCount: reconciled ? 1 : 0,
-                  skippedCount: 0,
-                  isBatch: false,
-                });
-              }}
-            >
-              {savingDb ? (
-                <>
-                  <Loader2 className="h-4 w-4 animate-spin" />
-                  Salvando comprovante...
-                </>
-              ) : (
-                <>
-                  <CheckCircle2 className="h-4 w-4" />
-                  Confirmar e salvar comprovante
-                </>
-              )}
-            </Button>
-          </CardContent>
-        </Card>
-      )}
-
-      {/* Bulk Upload Review */}
+      {/* Unified Upload Review (Single & Batch) */}
       {bulkItems.length > 0 && (
         <Card className="border-primary/20">
           <CardHeader>
             <div className="flex flex-wrap items-center justify-between gap-2">
-              <CardTitle className="text-base">
-                Análise em lote ({bulkItems.length} arquivos)
+              <CardTitle className="text-base font-bold uppercase tracking-wide text-primary">
+                {newItemsCount === 1
+                  ? "1 novo comprovante"
+                  : `${newItemsCount} novos comprovantes`}
               </CardTitle>
               <div className="flex flex-wrap gap-1.5">
-                <Badge variant="success">
-                  {bulkItems.filter((i) => i.status === "new").length} novos
-                </Badge>
-                {bulkItems.some(
-                  (i) =>
-                    i.status === "duplicate_db" || i.status === "duplicate_batch"
-                ) && (
-                  <Badge variant="secondary">
-                    {
-                      bulkItems.filter(
-                        (i) =>
-                          i.status === "duplicate_db" ||
-                          i.status === "duplicate_batch"
-                      ).length
-                    }{" "}
-                    já cadastrados
-                  </Badge>
-                )}
                 {bulkItems.some((i) => i.status === "error") && (
                   <Badge variant="warning">
                     {bulkItems.filter((i) => i.status === "error").length} com
@@ -1295,27 +1305,50 @@ export function ReceiptReader() {
                 )}
               </div>
             </div>
-            <CardDescription>
-              Comprovantes cujo ID da transação já existe no banco foram
-              ignorados automaticamente. Confirme o cliente de cada novo
-              comprovante para salvar.
-            </CardDescription>
           </CardHeader>
 
           <CardContent className="space-y-4">
-            {bulkItems.filter((i) => i.status === "new").length === 0 ? (
+            {bulkItems.some(
+              (item) =>
+                item.status === "duplicate_db" ||
+                item.status === "duplicate_batch"
+            ) && (
+              <div
+                role="alert"
+                className="rounded-xl border border-destructive/30 bg-destructive/10 px-3.5 py-3 text-sm text-destructive"
+              >
+                <p className="font-semibold">
+                  Foram encontrados comprovantes duplicados. Eles não serão
+                  salvos novamente.
+                </p>
+              </div>
+            )}
+
+            {newItemsCount === 0 ? (
               <div className="rounded-xl border border-border bg-secondary/40 p-4 text-center text-sm text-muted-foreground">
-                Nenhum comprovante novo para adicionar neste lote (todos já
-                estavam cadastrados ou falharam na leitura).
+                Nenhum comprovante novo para adicionar (todos já estavam
+                cadastrados ou falharam na leitura).
               </div>
             ) : (
               <div className="space-y-3">
                 {bulkItems
                   .filter((i) => i.status === "new")
-                  .map((item) => (
+                  .map((item) => {
+                    const hasUnidentifiedData =
+                      !item.selectedClienteId ||
+                      !item.nomeComprovante.trim() ||
+                      !item.valor ||
+                      !item.dataTransacao;
+
+                    return (
                     <div
                       key={item.id}
-                      className="space-y-2.5 rounded-xl border border-border bg-card p-3.5"
+                      className={cn(
+                        "space-y-2.5 rounded-xl border p-3.5 transition-colors",
+                        hasUnidentifiedData
+                          ? "border-destructive bg-destructive/10"
+                          : "border-border bg-card"
+                      )}
                     >
                       <div className="flex items-start justify-between gap-2">
                         <label className="flex cursor-pointer items-start gap-2.5">
@@ -1335,7 +1368,8 @@ export function ReceiptReader() {
                           />
                           <div className="min-w-0">
                             <p className="text-sm font-semibold text-foreground">
-                              {item.nomeComprovante || "Pagador não identificado"}
+                              {item.nomeComprovante ||
+                                "Pagador não identificado"}
                             </p>
                             <p className="truncate text-xs text-muted-foreground">
                               {item.fileName}
@@ -1346,6 +1380,12 @@ export function ReceiptReader() {
                                 ? ` ${item.horaTransacao}`
                                 : ""}
                             </p>
+                            {item.reportDate && (
+                              <p className="text-xs font-medium text-primary">
+                                Será vinculado ao relatório de{" "}
+                                {formatReportDate(item.reportDate)}
+                              </p>
+                            )}
                             {item.idTransacao && (
                               <p className="truncate font-mono text-[11px] text-muted-foreground">
                                 {item.idTransacao}
@@ -1360,52 +1400,198 @@ export function ReceiptReader() {
                       </div>
 
                       {item.selected && (
-                        <div className="space-y-1.5 pt-1">
-                          <div className="flex flex-wrap items-center justify-between gap-1">
-                            <Label
-                              htmlFor={`bulk-client-${item.id}`}
-                              className="text-xs"
-                            >
-                              Cliente vinculado *
-                            </Label>
-                            {item.suggestionReason ? (
-                              <Badge variant="success" className="text-[10px]">
-                                Sugerido ({item.suggestionReason})
-                              </Badge>
-                            ) : (
-                              <Badge variant="warning" className="text-[10px]">
-                                Selecione o cliente
-                              </Badge>
-                            )}
+                        <div className="grid gap-3 pt-1 sm:grid-cols-2">
+                          <div className="space-y-1.5 sm:col-span-2">
+                            <div className="flex flex-wrap items-center justify-between gap-1">
+                              <Label
+                                htmlFor={`bulk-client-${item.id}`}
+                                className="text-xs"
+                              >
+                                Cliente *
+                              </Label>
+                              {!item.selectedClienteId && (
+                                <Badge variant="warning" className="text-[10px]">
+                                  Selecione o cliente
+                                </Badge>
+                              )}
+                            </div>
+                            <ClientPicker
+                              key={item.id}
+                              id={`bulk-client-${item.id}`}
+                              clientes={clientes}
+                              clientesLoaded={clientesLoaded}
+                              value={item.selectedClienteId}
+                              onChange={(clienteId) => {
+                                const nextItem: BulkReceiptItem = {
+                                  ...item,
+                                  selectedClienteId: clienteId,
+                                };
+                                setBulkItems((prev) =>
+                                  prev.map((row) =>
+                                    row.id === item.id ? nextItem : row
+                                  )
+                                );
+                                if (clienteId) {
+                                  void recheckItemAgainstReportAndDb(nextItem);
+                                }
+                              }}
+                              placeholder="Selecione e digite o nome do cliente..."
+                            />
                           </div>
-                          <select
-                            id={`bulk-client-${item.id}`}
-                            value={item.selectedClienteId}
-                            onChange={(e) =>
+
+                          <BulkItemFieldsEditor
+                            item={item}
+                            selectedCliente={clientes.find(
+                              (c) => c.id === item.selectedClienteId
+                            )}
+                            onUpdate={(patch) => {
+                              const nextItem: BulkReceiptItem = {
+                                ...item,
+                                ...patch,
+                                receipt: item.receipt
+                                  ? {
+                                      ...item.receipt,
+                                      ...(patch.nomeComprovante !== undefined
+                                        ? {
+                                            payerName: patch.nomeComprovante,
+                                          }
+                                        : {}),
+                                    }
+                                  : item.receipt,
+                              };
+
                               setBulkItems((prev) =>
                                 prev.map((row) =>
-                                  row.id === item.id
-                                    ? {
-                                        ...row,
-                                        selectedClienteId: e.target.value,
-                                      }
-                                    : row
+                                  row.id === item.id ? nextItem : row
                                 )
-                              )
-                            }
-                            className="flex h-9 w-full rounded-xl border border-input bg-background px-3 py-1.5 text-xs text-foreground focus-visible:border-ring focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/20"
-                          >
-                            <option value="">Selecione um cliente...</option>
-                            {clientes.map((c) => (
-                              <option key={c.id} value={c.id}>
-                                {c.nome_loja}
-                              </option>
-                            ))}
-                          </select>
+                              );
+
+                              if (patch.nomeComprovante !== undefined) {
+                                updateHistoryEntry(
+                                  {
+                                    historyId: item.historyId,
+                                    idTransacao: item.idTransacao,
+                                  },
+                                  { payerName: patch.nomeComprovante }
+                                );
+                              }
+
+                              void recheckItemAgainstReportAndDb(nextItem);
+                            }}
+                          />
+
+                          {item.matchedRelatorio && (
+                            <div
+                              className={cn(
+                                "space-y-2.5 rounded-xl border p-3 sm:col-span-2",
+                                item.confirmRelatorioLink === true
+                                  ? "border-emerald-300 bg-emerald-50/70"
+                                  : item.confirmRelatorioLink === false
+                                    ? "border-border bg-secondary/40"
+                                    : "border-primary/40 bg-primary/5"
+                              )}
+                            >
+                              <div className="flex flex-wrap items-start justify-between gap-2">
+                                <div className="space-y-0.5">
+                                  <p className="text-xs font-bold text-foreground">
+                                    Este comprovante bate com o relatório de{" "}
+                                    {formatReportDate(
+                                      item.matchedRelatorio.dataTransacao
+                                    )}
+                                  </p>
+                                  <p className="text-xs text-muted-foreground">
+                                    <span className="font-semibold text-foreground">
+                                      {item.matchedRelatorio.nomeRelatorio}
+                                    </span>{" "}
+                                    • R${" "}
+                                    {item.matchedRelatorio.valor
+                                      .toFixed(2)
+                                      .replace(".", ",")}{" "}
+                                    às {item.matchedRelatorio.horaTransacao}
+                                  </p>
+                                </div>
+                                <Badge
+                                  variant={
+                                    item.confirmRelatorioLink === true
+                                      ? "success"
+                                      : item.confirmRelatorioLink === false
+                                        ? "secondary"
+                                        : "warning"
+                                  }
+                                  className="text-[10px]"
+                                >
+                                  {item.confirmRelatorioLink === true
+                                    ? "Vínculo confirmado"
+                                    : item.confirmRelatorioLink === false
+                                      ? "Não vincular"
+                                      : "Confirmação pendente"}
+                                </Badge>
+                              </div>
+
+                              <div className="flex flex-wrap items-center justify-between gap-2 pt-0.5">
+                                <span className="text-xs font-medium text-foreground">
+                                  Deseja vincular este comprovante ao relatório e
+                                  marcar como conferido?
+                                </span>
+                                <div className="flex flex-wrap items-center gap-2">
+                                  <Button
+                                    type="button"
+                                    size="sm"
+                                    variant={
+                                      item.confirmRelatorioLink === true
+                                        ? "default"
+                                        : "outline"
+                                    }
+                                    onClick={() =>
+                                      setBulkItems((prev) =>
+                                        prev.map((row) =>
+                                          row.id === item.id
+                                            ? {
+                                                ...row,
+                                                confirmRelatorioLink: true,
+                                              }
+                                            : row
+                                        )
+                                      )
+                                    }
+                                    className="h-8 px-3 text-xs"
+                                  >
+                                    <Check className="h-3.5 w-3.5" />
+                                    Confirmar vínculo
+                                  </Button>
+                                  <Button
+                                    type="button"
+                                    size="sm"
+                                    variant={
+                                      item.confirmRelatorioLink === false
+                                        ? "secondary"
+                                        : "outline"
+                                    }
+                                    onClick={() =>
+                                      setBulkItems((prev) =>
+                                        prev.map((row) =>
+                                          row.id === item.id
+                                            ? {
+                                                ...row,
+                                                confirmRelatorioLink: false,
+                                              }
+                                            : row
+                                        )
+                                      )
+                                    }
+                                    className="h-8 px-3 text-xs"
+                                  >
+                                    Salvar sem vincular
+                                  </Button>
+                                </div>
+                              </div>
+                            </div>
+                          )}
                         </div>
                       )}
                     </div>
-                  ))}
+                    );
+                  })}
               </div>
             )}
 
@@ -1440,7 +1626,7 @@ export function ReceiptReader() {
               </div>
             )}
 
-            {bulkItems.some((i) => i.status === "new") && (
+            {newItemsCount > 0 && (
               <Button
                 type="button"
                 disabled={
@@ -1454,7 +1640,9 @@ export function ReceiptReader() {
                       (!i.selectedClienteId ||
                         !i.nomeComprovante.trim() ||
                         !i.valor ||
-                        !i.dataTransacao)
+                        !i.dataTransacao ||
+                        (Boolean(i.matchedRelatorio) &&
+                          i.confirmRelatorioLink === null))
                   )
                 }
                 className="w-full"
@@ -1475,8 +1663,15 @@ export function ReceiptReader() {
                     banco_pagador: item.bancoPagador.trim() || null,
                     nome_recebedor: item.receipt?.receiverName || null,
                     cpf_cnpj_pagador: item.receipt?.payerDocument || null,
-                    status: "aguardando_relatorio" as const,
+                    status:
+                      item.matchedRelatorio && item.confirmRelatorioLink
+                        ? ("conferido" as const)
+                        : ("aguardando_relatorio" as const),
                     confianca_ocr: item.receipt?.confidence || null,
+                    matched_relatorio_id:
+                      item.matchedRelatorio && item.confirmRelatorioLink
+                        ? item.matchedRelatorio.relatorioId
+                        : null,
                   }));
 
                   setBulkSaving(true);
@@ -1494,11 +1689,28 @@ export function ReceiptReader() {
                       i.status === "duplicate_batch"
                   ).length;
 
+                  const reconciledItems = selectedNew
+                    .filter((i) => Boolean(i.matchedRelatorio && i.confirmRelatorioLink))
+                    .map((i) => {
+                      const clienteNome =
+                        clientes.find((c) => c.id === i.selectedClienteId)
+                          ?.nome_loja || "";
+                      return {
+                        id: i.id,
+                        nomeComprovante: i.nomeComprovante.trim(),
+                        nomeCliente: clienteNome,
+                        valor: i.valor,
+                        reportDate: i.matchedRelatorio!.dataTransacao,
+                        nomeRelatorio: i.matchedRelatorio!.nomeRelatorio,
+                      };
+                    });
+
                   setSaveModalResult({
                     open: true,
                     title: `${result.insertedCount} comprovante(s) salvo(s) com sucesso!`,
-                    description: "Lote processado e vinculado aos clientes.",
+                    description: "Comprovante(s) processado(s) e vinculado(s) aos clientes.",
                     reconciledCount: result.reconciledCount,
+                    reconciledItems,
                     skippedCount: ignoredBefore + result.skippedCount,
                     isBatch: true,
                   });
@@ -1507,7 +1719,7 @@ export function ReceiptReader() {
                 {bulkSaving ? (
                   <>
                     <Loader2 className="h-4 w-4 animate-spin" />
-                    Salvando lote...
+                    Salvando...
                   </>
                 ) : (
                   <>
@@ -1527,7 +1739,7 @@ export function ReceiptReader() {
       )}
 
       {/* Empty State */}
-      {!receipt && bulkItems.length === 0 && !loading && (
+      {bulkItems.length === 0 && !loading && (
         <section className="rounded-3xl border border-slate-200 bg-white p-8 text-center shadow-sm">
           <Sparkles className="mx-auto h-9 w-9 text-blue-800" />
           <h2 className="mt-3 text-base font-semibold text-slate-800">
@@ -1560,13 +1772,9 @@ export function ReceiptReader() {
           </div>
           <div className="flex flex-col divide-y divide-slate-100">
             {history.map((item) => (
-              <button
+              <div
                 key={item.id}
-                type="button"
-                onClick={() => {
-                  setReceipt(item.receipt);
-                }}
-                className="flex items-center justify-between gap-3 py-2.5 text-left transition hover:bg-slate-50 px-2 rounded-xl"
+                className="flex items-center justify-between gap-3 px-2 py-2.5 text-left"
               >
                 <div className="min-w-0">
                   <p className="truncate text-sm font-semibold text-slate-900">
@@ -1580,29 +1788,12 @@ export function ReceiptReader() {
                 <span className="shrink-0 text-sm font-bold text-blue-900">
                   {item.receipt.amount || "—"}
                 </span>
-              </button>
+              </div>
             ))}
           </div>
         </section>
       )}
 
-      {/* PWA Share Tip (Bottom) */}
-      {!isStandalone && (
-        <div className="flex items-start gap-3 rounded-2xl border border-blue-200 bg-blue-50/70 p-3.5 text-xs text-blue-950">
-          <Share2 className="mt-0.5 h-4 w-4 shrink-0 text-blue-800" />
-          <div>
-            <p className="font-semibold">
-              Quer que o Pix Pães apareça no &ldquo;Compartilhar&rdquo; do celular?
-            </p>
-            <p className="mt-0.5 text-blue-900/90">
-              Instale este app na tela inicial pelo menu do navegador (Android
-              Chrome: <strong>Instalar aplicativo</strong>). Depois disso, basta
-              compartilhar qualquer foto, PDF ou link do WhatsApp direto para o{" "}
-              <strong>Pix Pães</strong>.
-            </p>
-          </div>
-        </div>
-      )}
       <ConfirmModal
         open={saveModalResult.open}
         title={saveModalResult.title}
@@ -1619,24 +1810,15 @@ export function ReceiptReader() {
             title: "",
             description: "",
             reconciledCount: 0,
+            reconciledItems: [],
             skippedCount: 0,
             isBatch: false,
           });
-          setReceipt(null);
           setBulkItems([]);
           setBulkError(null);
           setLinkInput("");
           setError(null);
           setWarningToast(null);
-          setSaveDbError(null);
-          setSelectedClienteId("");
-          setClientSearch("");
-          setDraftNomeComprovante("");
-          setDraftValor("");
-          setDraftData("");
-          setDraftHora("");
-          setDraftIdTransacao("");
-          setDraftBancoPagador("");
           if (fileInputRef.current) {
             fileInputRef.current.value = "";
           }
@@ -1648,87 +1830,61 @@ export function ReceiptReader() {
             title: "",
             description: "",
             reconciledCount: 0,
+            reconciledItems: [],
             skippedCount: 0,
             isBatch: false,
           });
           router.push("/");
         }}
       >
-        <div className="space-y-2 rounded-xl border border-border bg-secondary/40 p-3.5 text-sm">
-          <div className="flex items-center justify-between gap-2">
-            <span className="font-medium text-muted-foreground">
-              Conciliação:
-            </span>
-            {saveModalResult.reconciledCount > 0 ? (
-              <Badge variant="success">
-                {saveModalResult.isBatch
-                  ? `${saveModalResult.reconciledCount} conciliado(s)`
-                  : "Conciliado automaticamente"}
-              </Badge>
-            ) : (
-              <Badge variant="warning">Aguardando relatório</Badge>
+        {(saveModalResult.reconciledItems.length > 0 ||
+          saveModalResult.skippedCount > 0) && (
+          <div className="space-y-2.5 rounded-xl border border-border bg-secondary/40 p-3.5 text-sm">
+            {saveModalResult.reconciledItems.length > 0 && (
+              <div className="space-y-2">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="font-medium text-foreground">
+                    Vinculados ao relatório:
+                  </span>
+                  <Badge variant="success">
+                    {`${saveModalResult.reconciledItems.length} conferido(s)`}
+                  </Badge>
+                </div>
+                <div className="max-h-40 space-y-1.5 overflow-y-auto">
+                  {saveModalResult.reconciledItems.map((item) => (
+                    <div
+                      key={item.id}
+                      className="flex items-center justify-between gap-2 rounded-lg border border-emerald-200/70 bg-emerald-50/70 px-2.5 py-1.5 text-xs text-emerald-950"
+                    >
+                      <div className="min-w-0">
+                        <p className="truncate font-semibold">
+                          {item.nomeCliente || item.nomeComprovante}
+                        </p>
+                        <p className="truncate text-[11px] text-emerald-800">
+                          Relatório de {formatReportDate(item.reportDate)} •{" "}
+                          {item.nomeRelatorio}
+                        </p>
+                      </div>
+                      <span className="shrink-0 font-bold text-emerald-800">
+                        R$ {Number(item.valor).toFixed(2).replace(".", ",")}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {saveModalResult.skippedCount > 0 && (
+              <div className="flex items-center justify-between gap-2 text-xs text-muted-foreground">
+                <span>Ignorados (já cadastrados):</span>
+                <span className="font-semibold text-foreground">
+                  {saveModalResult.skippedCount}
+                </span>
+              </div>
             )}
           </div>
-          {saveModalResult.isBatch && saveModalResult.skippedCount > 0 && (
-            <div className="flex items-center justify-between gap-2 text-xs text-muted-foreground">
-              <span>Ignorados (já cadastrados):</span>
-              <span className="font-semibold text-foreground">
-                {saveModalResult.skippedCount}
-              </span>
-            </div>
-          )}
-          <p className="text-xs text-muted-foreground">
-            {saveModalResult.reconciledCount > 0
-              ? "Encontramos lançamento(s) no relatório com o mesmo ID da transação e já marcamos como conferidos."
-              : "Ainda não há lançamento no relatório com este ID da transação. Ficará aguardando conferência."}
-          </p>
-        </div>
+        )}
       </ConfirmModal>
-    </div>
-  );
-}
-
-function DetailBox({
-  label,
-  value,
-  mono = false,
-  onCopy,
-  copied = false,
-}: {
-  label: string;
-  value: string | null;
-  mono?: boolean;
-  onCopy?: () => void;
-  copied?: boolean;
-}) {
-  return (
-    <div className="flex items-start justify-between gap-2 rounded-2xl border border-slate-100 bg-slate-50 p-3">
-      <div className="min-w-0">
-        <p className="text-[11px] font-semibold uppercase tracking-wider text-slate-400">
-          {label}
-        </p>
-        <p
-          className={`mt-0.5 break-all text-sm font-medium text-slate-900 ${
-            mono ? "font-mono text-xs" : ""
-          }`}
-        >
-          {value || "—"}
-        </p>
-      </div>
-      {value && onCopy && (
-        <button
-          type="button"
-          onClick={onCopy}
-          className="shrink-0 rounded-lg p-1.5 text-slate-400 transition hover:bg-slate-200 hover:text-slate-700"
-          title={`Copiar ${label}`}
-        >
-          {copied ? (
-            <Check className="h-3.5 w-3.5 text-blue-700" />
-          ) : (
-            <Copy className="h-3.5 w-3.5" />
-          )}
-        </button>
-      )}
     </div>
   );
 }

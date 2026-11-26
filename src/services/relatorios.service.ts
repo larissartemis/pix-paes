@@ -1,5 +1,6 @@
 import { supabase } from "@/lib/supabase";
 import type { ReportPixRow } from "@/lib/report-parser";
+import { areTransactionIdsEquivalent } from "@/services/comprovantes.service";
 import type { Tables, TablesInsert } from "@/types/database.types";
 
 export type RelatorioRow = Tables<"relatorios">;
@@ -489,13 +490,12 @@ export async function reconcilePendingWithReport(
   } | null => {
     const compIdTransacao = (comp.id_transacao || "").trim();
 
-    // Critério 1: Match exato por ID da transação (endToEndId)
+    // Critério 1: Match exato ou tolerante a OCR por ID da transação (endToEndId)
     if (compIdTransacao) {
       const exactIdMatch = candidateRelatorios.find(
         (r) =>
           !usedRelatorioIds.has(r.id) &&
-          (r.id_transacao || "").trim().toLowerCase() ===
-            compIdTransacao.toLowerCase()
+          areTransactionIdsEquivalent(compIdTransacao, r.id_transacao)
       );
       if (exactIdMatch) {
         return { relatorio: exactIdMatch, matchBy: "id_transacao" };
