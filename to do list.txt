@@ -1,17 +1,13 @@
-PWA pix pães
------
-compartilhar:
- - faz o upload e seleciona o tipo de documento (comprovante/rel diário/rel semanal)
- - se comprovante:
-    - extrai pagador, valor e data
-    - avisar se o destino não for passaky
-    - sugere cliente/estabelecimento baseado no cadastro (confirmação do usuário ou seleção manual)
-    - insere no dia com status "aguardando relatório"
- - se rel diário/semanal (WIP):
-    - procura match para cada pagamentos do dia:
-        - se encontrar, muda status do comprovante para "conferido"
-        - se não encontrar, altera status para "pendente"
-        - verifica pagamentos pendentes de até 2 dias antes
-
-cadastro de estabelecimento + clientes
-1 estabelecimento : n clientes
+em leitor/
+remova a div "Quer que o Pix Pães apareça no “Compartilhar” do celular?
+Instale este app na tela inicial pelo menu do navegador (Android Chrome: Instalar aplicativo). Depois disso, basta compartilhar qualquer foto, PDF ou link do WhatsApp direto para o Pix Pães."
+junte o titulo Leitor de Comprovantes PIX com o envio do arquivo abaixo, separando-os por uma linha horizontal
+remova o subtitulo "Importe comprovantes por arquivo, link ou compartilhamento."
+após enviar comprovantes, remova a badge sugerido (nome) mas mantenha o selecione o cliente
+remova o vinculado de "cliente vinculado"
+altere a lista com o nome do cliente para ser um componente de lista que me permita clicar e começar a digitar o nome do cliente e ir diminuindo os itens da lista
+me diga em que relatório esse comprovante vai ser vinculado, se já soubermos
+verifique pq selecionando um cliente, não consigo confirmar e salvar
+em vez de "Análise em lote (3 arquivos)" e badge "3 novos", exiba o titulo (azul e caixa alta) "3 novos comprovantes"
+remova "Comprovantes cujo ID da transação já existe no banco foram ignorados automaticamente. Confirme o cliente de cada novo comprovante para salvar."
+se algum comprovante for enviado duplicado, avise ao usuario num alert vermelho

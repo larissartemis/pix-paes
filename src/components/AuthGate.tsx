@@ -6,19 +6,27 @@ import { usePathname, useRouter } from "next/navigation";
 import type { Session } from "@supabase/supabase-js";
 import {
   CheckSquare,
+  Download,
   FileSpreadsheet,
   Home,
   Loader2,
   LogOut,
   Menu,
   ScanText,
+  UserRoundPen,
   Users,
   X,
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
 import { authService } from "@/services/auth.service";
+
+interface BeforeInstallPromptEvent extends Event {
+  prompt: () => Promise<void>;
+  userChoice: Promise<{ outcome: "accepted" | "dismissed" }>;
+}
 
 interface AuthGateProps {
   children: React.ReactNode;
@@ -38,6 +46,18 @@ export function AuthGate({ children }: AuthGateProps) {
   const [session, setSession] = useState<Session | null>(null);
   const [checking, setChecking] = useState(true);
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [installPrompt, setInstallPrompt] =
+    useState<BeforeInstallPromptEvent | null>(null);
+  const [isStandalone] = useState(() =>
+    typeof window !== "undefined"
+      ? window.matchMedia("(display-mode: standalone)").matches ||
+        (window.navigator as Navigator & { standalone?: boolean }).standalone === true
+      : false
+  );
+  const [profileOpen, setProfileOpen] = useState(false);
+  const [profileName, setProfileName] = useState("");
+  const [profileSaving, setProfileSaving] = useState(false);
+  const [profileError, setProfileError] = useState<string | null>(null);
 
   useEffect(() => {
     let mounted = true;
@@ -73,9 +93,62 @@ export function AuthGate({ children }: AuthGateProps) {
     setSidebarOpen(false);
   }, [pathname]);
 
+  useEffect(() => {
+    const handleBeforeInstall = (event: Event) => {
+      event.preventDefault();
+      setInstallPrompt(event as BeforeInstallPromptEvent);
+    };
+    const handleAppInstalled = () => setInstallPrompt(null);
+
+    window.addEventListener("beforeinstallprompt", handleBeforeInstall);
+    window.addEventListener("appinstalled", handleAppInstalled);
+    return () => {
+      window.removeEventListener("beforeinstallprompt", handleBeforeInstall);
+      window.removeEventListener("appinstalled", handleAppInstalled);
+    };
+  }, []);
+
   async function handleSignOut() {
     await authService.signOut();
     router.replace("/login");
+  }
+
+  async function handleInstall() {
+    if (!installPrompt) return;
+    await installPrompt.prompt();
+    const choice = await installPrompt.userChoice;
+    if (choice.outcome === "accepted") setInstallPrompt(null);
+    setSidebarOpen(false);
+  }
+
+  function openProfile() {
+    setProfileName(userDisplayName);
+    setProfileError(null);
+    setProfileOpen(true);
+    setSidebarOpen(false);
+  }
+
+  async function handleProfileSubmit(event: React.FormEvent) {
+    event.preventDefault();
+    const name = profileName.trim();
+    if (!name) {
+      setProfileError("Informe seu nome.");
+      return;
+    }
+    setProfileSaving(true);
+    setProfileError(null);
+    const { data, error } = await authService.updateProfile(name);
+    setProfileSaving(false);
+    if (error) {
+      setProfileError(error.message);
+      return;
+    }
+    if (data?.user) {
+      setSession((current) =>
+        current ? { ...current, user: data.user } : current
+      );
+    }
+    setProfileOpen(false);
   }
 
   if (checking || !session) {
@@ -250,6 +323,28 @@ export function AuthGate({ children }: AuthGateProps) {
                   </Link>
                 );
               })}
+
+              <div className="my-2 border-t border-border" />
+
+              <button
+                type="button"
+                onClick={openProfile}
+                className="flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium text-foreground transition-colors hover:bg-accent"
+              >
+                <UserRoundPen className="h-4 w-4" />
+                Editar meu perfil
+              </button>
+
+              {installPrompt && !isStandalone && (
+                <button
+                  type="button"
+                  onClick={() => void handleInstall()}
+                  className="flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium text-foreground transition-colors hover:bg-accent"
+                >
+                  <Download className="h-4 w-4" />
+                  Instalar aplicativo
+                </button>
+              )}
             </nav>
 
             <div className="border-t border-border p-4">
@@ -275,6 +370,71 @@ export function AuthGate({ children }: AuthGateProps) {
               </Button>
             </div>
           </aside>
+        </div>
+      )}
+
+      {profileOpen && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center px-4">
+          <div
+            className="absolute inset-0 bg-foreground/40 backdrop-blur-xs"
+            onClick={() => setProfileOpen(false)}
+            aria-hidden="true"
+          />
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="profile-title"
+            className="relative z-10 w-full max-w-md rounded-2xl border border-border bg-card p-5 shadow-xl"
+          >
+            <div className="mb-4 flex items-start justify-between gap-3">
+              <div>
+                <h2 id="profile-title" className="text-base font-bold text-foreground">
+                  Editar meu perfil
+                </h2>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  Atualize o nome exibido no aplicativo.
+                </p>
+              </div>
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon"
+                onClick={() => setProfileOpen(false)}
+                aria-label="Fechar"
+              >
+                <X className="h-4 w-4" />
+              </Button>
+            </div>
+            <form onSubmit={handleProfileSubmit} className="space-y-4">
+              <div className="space-y-1.5">
+                <label htmlFor="profile-name" className="text-sm font-medium text-foreground">
+                  Nome
+                </label>
+                <Input
+                  id="profile-name"
+                  value={profileName}
+                  onChange={(event) => setProfileName(event.target.value)}
+                  placeholder="Seu nome"
+                  autoFocus
+                />
+              </div>
+              {profileError && (
+                <p className="text-sm text-destructive">{profileError}</p>
+              )}
+              <div className="flex justify-end gap-2">
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={() => setProfileOpen(false)}
+                >
+                  Cancelar
+                </Button>
+                <Button type="submit" disabled={profileSaving}>
+                  {profileSaving ? "Salvando..." : "Salvar"}
+                </Button>
+              </div>
+            </form>
+          </div>
         </div>
       )}
 

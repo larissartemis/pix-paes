@@ -12,7 +12,6 @@ import {
   ClipboardPaste,
   Copy,
   Database,
-  Download,
   History,
   Link2,
   Loader2,
@@ -103,11 +102,6 @@ function getMimeTypeFromName(name: string): string {
   return "image/jpeg";
 }
 
-interface BeforeInstallPromptEvent extends Event {
-  prompt: () => Promise<void>;
-  userChoice: Promise<{ outcome: "accepted" | "dismissed" }>;
-}
-
 const HISTORY_KEY = "pix-paes-history-v1";
 
 function extractFirstUrl(input: string): string | null {
@@ -138,8 +132,6 @@ export function ReceiptReader() {
   const [showReceiver, setShowReceiver] = useState(false);
   const [warningToast, setWarningToast] = useState<string | null>(null);
   const [history, setHistory] = useState<HistoryItem[]>([]);
-  const [installPrompt, setInstallPrompt] =
-    useState<BeforeInstallPromptEvent | null>(null);
   const [isStandalone, setIsStandalone] = useState(false);
 
   // Supabase clients & receipt persistence state
@@ -237,13 +229,6 @@ export function ReceiptReader() {
         true;
     setIsStandalone(standalone);
 
-    const handleBeforeInstall = (e: Event) => {
-      e.preventDefault();
-      setInstallPrompt(e as BeforeInstallPromptEvent);
-    };
-    window.addEventListener("beforeinstallprompt", handleBeforeInstall);
-    return () =>
-      window.removeEventListener("beforeinstallprompt", handleBeforeInstall);
   }, []);
 
   const saveToHistory = useCallback((parsed: ParsedReceipt) => {
@@ -744,22 +729,13 @@ export function ReceiptReader() {
     }
   };
 
-  const handleInstallClick = async () => {
-    if (!installPrompt) return;
-    await installPrompt.prompt();
-    const choice = await installPrompt.userChoice;
-    if (choice.outcome === "accepted") {
-      setInstallPrompt(null);
-    }
-  };
-
   const clearHistory = () => {
     setHistory([]);
     localStorage.removeItem(HISTORY_KEY);
   };
 
   return (
-    <div className="mx-auto flex w-full max-w-2xl flex-col gap-5 px-4 py-6 pb-16">
+    <div className="mx-auto flex w-full max-w-5xl flex-col gap-5 px-4 py-6 pb-16">
       {/* Yellow Warning Toast */}
       {warningToast && (
         <div
@@ -783,43 +759,19 @@ export function ReceiptReader() {
       )}
 
       {/* Header */}
-      <header className="flex items-center justify-between gap-3">
-        <div className="flex items-center gap-3">
-          <div className="flex h-11 w-11 items-center justify-center rounded-2xl bg-blue-900 text-white shadow-sm">
-            <svg
-              viewBox="0 0 16 16"
-              fill="currentColor"
-              className="h-6 w-6"
-              aria-hidden="true"
-            >
-              <path d="M11.917 11.71a2.046 2.046 0 0 1-1.454-.602l-2.1-2.1a.4.4 0 0 0-.551 0l-2.108 2.108a2.044 2.044 0 0 1-1.454.602h-.414l2.66 2.66c.83.83 2.177.83 3.007 0l2.667-2.668h-.253zM4.25 4.282c.55 0 1.066.214 1.454.602l2.108 2.108a.39.39 0 0 0 .552 0l2.1-2.1a2.044 2.044 0 0 1 1.453-.602h.253L9.503 1.623a2.127 2.127 0 0 0-3.007 0l-2.66 2.66h.414z" />
-              <path d="m14.377 6.496-1.612-1.612a.307.307 0 0 1-.114.023h-.733c-.379 0-.75.154-1.017.422l-2.1 2.1a1.005 1.005 0 0 1-1.425 0L5.268 5.32a1.448 1.448 0 0 0-1.018-.422h-.9a.306.306 0 0 1-.109-.021L1.623 6.496c-.83.83-.83 2.177 0 3.008l1.618 1.618a.305.305 0 0 1 .108-.022h.901c.38 0 .75-.153 1.018-.421L7.375 8.57a1.034 1.034 0 0 1 1.426 0l2.1 2.1c.267.268.638.421 1.017.421h.733c.04 0 .079.01.114.024l1.612-1.612c.83-.83.83-2.178 0-3.008z" />
-            </svg>
-          </div>
-          <div>
-            <h1 className="text-xl font-bold tracking-tight text-slate-900">
-              Pix Pães
-            </h1>
-            <p className="text-xs text-slate-500">
-              Leitor de comprovantes Pix
-            </p>
-          </div>
-        </div>
-
-        {installPrompt && !isStandalone && (
-          <button
-            type="button"
-            onClick={handleInstallClick}
-            className="inline-flex items-center gap-1.5 rounded-xl bg-blue-900 px-3 py-2 text-xs font-semibold text-white shadow-sm transition hover:bg-blue-950 active:scale-95"
-          >
-            <Download className="h-4 w-4" />
-            Instalar PWA
-          </button>
-        )}
-      </header>
+      <Card className="overflow-hidden">
+        <CardHeader className="border-b border-border p-5">
+          <CardTitle className="text-base font-bold uppercase tracking-wide text-primary">
+            Leitor de Comprovantes PIX
+          </CardTitle>
+          <CardDescription>
+            Importe comprovantes por arquivo, link ou compartilhamento.
+          </CardDescription>
+        </CardHeader>
+      </Card>
 
       {/* Upload & Link Input Area */}
-      <section className="rounded-3xl border border-slate-200 bg-white p-4 shadow-sm">
+      <section className="rounded-3xl border border-border bg-card p-4 shadow-sm">
         <input
           ref={fileInputRef}
           type="file"

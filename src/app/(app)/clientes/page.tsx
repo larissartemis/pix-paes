@@ -3,6 +3,8 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import {
   CheckCircle2,
+  ChevronLeft,
+  ChevronRight,
   Loader2,
   MapPin,
   Pencil,
@@ -23,6 +25,7 @@ import {
 } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { SelectList } from "@/components/ui/select-list";
 import { cn } from "@/lib/utils";
 import {
   type ClienteRow,
@@ -54,6 +57,17 @@ function formatRotaLabel(rota: RotaTipo | null) {
   if (rota === "rota_1") return "Rota 1";
   if (rota === "rota_2") return "Rota 2";
   return null;
+}
+
+function cleanClienteNomeLoja(raw: string): string {
+  // Remove leading/trailing numbers, dots, and dashes (e.g. "01 - Padaria", "64.729.083 - Loja", "123 - ")
+  const cleaned = raw
+    .replace(/^[\d.\s/–—-]+/, "")
+    .replace(/[\s–—-]+$/, "")
+    .replace(/\s*[–—-]\s*/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  return cleaned || raw;
 }
 
 interface TagListInputProps {
@@ -151,6 +165,8 @@ export default function ClientesPage() {
   const [formOpen, setFormOpen] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [form, setForm] = useState<ClienteFormState>(EMPTY_FORM);
+  const [currentPage, setCurrentPage] = useState(1);
+  const pageSize = 5;
 
   const loadClientes = useCallback(async () => {
     setLoading(true);
@@ -193,6 +209,11 @@ export default function ClientesPage() {
       return haystack.includes(query);
     });
   }, [clientes, search, statusFilter, rotaFilter]);
+
+  const totalPages = Math.max(1, Math.ceil(filteredClientes.length / pageSize));
+  const safeCurrentPage = Math.min(currentPage, totalPages);
+  const startIndex = (safeCurrentPage - 1) * pageSize;
+  const paginatedClientes = filteredClientes.slice(startIndex, startIndex + pageSize);
 
   function openNewForm() {
     setEditingId(null);
@@ -303,22 +324,73 @@ export default function ClientesPage() {
   }
 
   return (
-    <div className="mx-auto max-w-4xl space-y-6 px-4 py-6">
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-        <div className="space-y-1">
-          <h1 className="text-2xl font-bold tracking-tight text-foreground">
-            Clientes
-          </h1>
-          <p className="text-sm text-muted-foreground">
-            Cadastre lojas, rotas e os nomes que aparecem nos comprovantes e relatórios.
-          </p>
-        </div>
+    <div className="mx-auto max-w-5xl space-y-6 px-4 py-6">
+      {/* Header + Search & Filters Card */}
+      <Card>
+        <CardHeader className="border-b border-border p-5">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <CardTitle className="text-base font-bold uppercase tracking-wide text-primary">
+              Clientes
+            </CardTitle>
 
-        <Button onClick={openNewForm} className="sm:w-auto">
-          <Plus className="h-4 w-4" />
-          Novo cliente
-        </Button>
-      </div>
+            <Button onClick={openNewForm} size="sm">
+              <Plus className="h-4 w-4" />
+              Novo cliente
+            </Button>
+          </div>
+        </CardHeader>
+
+        <CardContent className="p-5">
+          <div className="flex flex-col gap-3 sm:flex-row">
+            <div className="relative flex-1">
+              <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+              <Input
+                value={search}
+                onChange={(e) => {
+                  setSearch(e.target.value);
+                  setCurrentPage(1);
+                }}
+                placeholder="Buscar por loja, cidade ou nome no Pix..."
+                className="h-9 pl-9 text-xs"
+              />
+            </div>
+
+            <div className="flex flex-wrap gap-2">
+              <SelectList
+                ariaLabel="Filtrar por status"
+                value={statusFilter}
+                options={[
+                  { value: "ativos", label: "Ativos" },
+                  { value: "inativos", label: "Inativos" },
+                  { value: "todos", label: "Todos" },
+                ]}
+                onChange={(val) => {
+                  setStatusFilter(val as "todos" | "ativos" | "inativos");
+                  setCurrentPage(1);
+                }}
+                className="h-9 min-w-28 bg-background"
+                menuClassName="w-32"
+              />
+
+              <SelectList
+                ariaLabel="Filtrar por rota"
+                value={rotaFilter}
+                options={[
+                  { value: "todas", label: "Todas as rotas" },
+                  { value: "rota_1", label: "Rota 1" },
+                  { value: "rota_2", label: "Rota 2" },
+                ]}
+                onChange={(val) => {
+                  setRotaFilter(val as "todas" | RotaTipo);
+                  setCurrentPage(1);
+                }}
+                className="h-9 min-w-36 bg-background"
+                menuClassName="w-40 right-0 left-auto"
+              />
+            </div>
+          </div>
+        </CardContent>
+      </Card>
 
       {feedback && (
         <div className="flex items-center gap-2 rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-800">
@@ -385,21 +457,23 @@ export default function ClientesPage() {
 
                 <div className="space-y-1.5">
                   <Label htmlFor="rota">Rota</Label>
-                  <select
-                    id="rota"
+                  <SelectList
+                    ariaLabel="Selecionar rota"
                     value={form.rota}
-                    onChange={(e) =>
+                    options={[
+                      { value: "", label: "Sem rota definida" },
+                      { value: "rota_1", label: "Rota 1" },
+                      { value: "rota_2", label: "Rota 2" },
+                    ]}
+                    onChange={(val) =>
                       setForm((prev) => ({
                         ...prev,
-                        rota: e.target.value as RotaTipo | "",
+                        rota: val as RotaTipo | "",
                       }))
                     }
-                    className="flex h-10 w-full rounded-xl border border-input bg-card px-3 py-2 text-sm text-foreground shadow-xs transition-colors focus-visible:border-ring focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/20"
-                  >
-                    <option value="">Sem rota definida</option>
-                    <option value="rota_1">Rota 1</option>
-                    <option value="rota_2">Rota 2</option>
-                  </select>
+                    className="h-10 w-full bg-card"
+                    menuClassName="w-full"
+                  />
                 </div>
 
                 <div className="space-y-1.5">
@@ -472,52 +546,6 @@ export default function ClientesPage() {
         </Card>
       )}
 
-      <Card>
-        <CardContent className="pt-6">
-          <div className="flex flex-col gap-3 sm:flex-row">
-            <div className="relative flex-1">
-              <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-              <Input
-                value={search}
-                onChange={(e) => setSearch(e.target.value)}
-                placeholder="Buscar por loja, cidade ou nome no Pix..."
-                className="pl-10"
-              />
-            </div>
-
-            <div className="flex gap-2">
-              <select
-                aria-label="Filtrar por status"
-                value={statusFilter}
-                onChange={(e) =>
-                  setStatusFilter(
-                    e.target.value as "todos" | "ativos" | "inativos"
-                  )
-                }
-                className="h-10 rounded-xl border border-input bg-card px-3 text-sm text-foreground focus-visible:border-ring focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/20"
-              >
-                <option value="ativos">Ativos</option>
-                <option value="inativos">Inativos</option>
-                <option value="todos">Todos</option>
-              </select>
-
-              <select
-                aria-label="Filtrar por rota"
-                value={rotaFilter}
-                onChange={(e) =>
-                  setRotaFilter(e.target.value as "todas" | RotaTipo)
-                }
-                className="h-10 rounded-xl border border-input bg-card px-3 text-sm text-foreground focus-visible:border-ring focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/20"
-              >
-                <option value="todas">Todas as rotas</option>
-                <option value="rota_1">Rota 1</option>
-                <option value="rota_2">Rota 2</option>
-              </select>
-            </div>
-          </div>
-        </CardContent>
-      </Card>
-
       {loading ? (
         <div className="flex flex-col items-center gap-3 py-12 text-muted-foreground">
           <Loader2 className="h-7 w-7 animate-spin text-primary" />
@@ -539,70 +567,72 @@ export default function ClientesPage() {
         </Card>
       ) : (
         <div className="grid gap-3">
-          {filteredClientes.map((cliente) => {
+          {paginatedClientes.map((cliente) => {
             const rotaLabel = formatRotaLabel(cliente.rota);
             return (
               <Card
                 key={cliente.id}
                 className={cn(!cliente.ativo && "opacity-70")}
               >
-                <CardContent className="flex flex-col gap-4 pt-6 sm:flex-row sm:items-start sm:justify-between">
-                  <div className="space-y-2">
-                    <div className="flex flex-wrap items-center gap-2">
-                      <h2 className="text-base font-semibold text-foreground">
-                        {cliente.nome_loja}
-                      </h2>
-                      <Badge variant={cliente.ativo ? "success" : "secondary"}>
-                        {cliente.ativo ? "Ativo" : "Inativo"}
-                      </Badge>
-                      {rotaLabel && <Badge variant="outline">{rotaLabel}</Badge>}
+                <CardContent className="flex flex-col gap-4 pt-6">
+                  {/* Top Section: Details on left, Ativo Badge on right */}
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0 flex-1 space-y-2">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <h2 className="text-base font-semibold text-foreground">
+                          {cleanClienteNomeLoja(cliente.nome_loja)}
+                        </h2>
+                        {rotaLabel && (
+                          <Badge variant="outline">{rotaLabel}</Badge>
+                        )}
+                      </div>
+
+                      {(cliente.cidade || cliente.telefone) && (
+                        <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
+                          {cliente.cidade && (
+                            <span className="inline-flex items-center gap-1">
+                              <MapPin className="h-3.5 w-3.5" />
+                              {cliente.cidade}
+                            </span>
+                          )}
+                          {cliente.telefone && (
+                            <span className="inline-flex items-center gap-1">
+                              <Phone className="h-3.5 w-3.5" />
+                              {cliente.telefone}
+                            </span>
+                          )}
+                        </div>
+                      )}
+
+                      {cliente.nomes_comprovante.length > 0 && (
+                        <p className="pt-1 text-xs text-foreground">
+                          <span className="font-medium text-muted-foreground">
+                            Comprovante:{" "}
+                          </span>
+                          <span>{cliente.nomes_comprovante.join(", ")}</span>
+                        </p>
+                      )}
+
+                      {cliente.nomes_relatorio.length > 0 && (
+                        <p className="text-xs text-foreground">
+                          <span className="font-medium text-muted-foreground">
+                            Relatório:{" "}
+                          </span>
+                          <span>{cliente.nomes_relatorio.join(", ")}</span>
+                        </p>
+                      )}
                     </div>
 
-                    {(cliente.cidade || cliente.telefone) && (
-                      <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
-                        {cliente.cidade && (
-                          <span className="inline-flex items-center gap-1">
-                            <MapPin className="h-3.5 w-3.5" />
-                            {cliente.cidade}
-                          </span>
-                        )}
-                        {cliente.telefone && (
-                          <span className="inline-flex items-center gap-1">
-                            <Phone className="h-3.5 w-3.5" />
-                            {cliente.telefone}
-                          </span>
-                        )}
-                      </div>
-                    )}
-
-                    {cliente.nomes_comprovante.length > 0 && (
-                      <div className="flex flex-wrap items-center gap-1.5 pt-1">
-                        <span className="text-xs font-medium text-muted-foreground">
-                          Comprovante:
-                        </span>
-                        {cliente.nomes_comprovante.map((nome, idx) => (
-                          <Badge key={`${nome}-${idx}`} variant="secondary">
-                            {nome}
-                          </Badge>
-                        ))}
-                      </div>
-                    )}
-
-                    {cliente.nomes_relatorio.length > 0 && (
-                      <div className="flex flex-wrap items-center gap-1.5">
-                        <span className="text-xs font-medium text-muted-foreground">
-                          Relatório:
-                        </span>
-                        {cliente.nomes_relatorio.map((nome, idx) => (
-                          <Badge key={`${nome}-${idx}`} variant="outline">
-                            {nome}
-                          </Badge>
-                        ))}
-                      </div>
-                    )}
+                    <Badge
+                      variant={cliente.ativo ? "success" : "secondary"}
+                      className="shrink-0"
+                    >
+                      {cliente.ativo ? "Ativo" : "Inativo"}
+                    </Badge>
                   </div>
 
-                  <div className="flex shrink-0 gap-2">
+                  {/* Bottom Section: Editar / Desativar */}
+                  <div className="flex items-center justify-end gap-2 border-t border-border pt-3">
                     <Button
                       type="button"
                       variant="outline"
@@ -614,10 +644,14 @@ export default function ClientesPage() {
                     </Button>
                     <Button
                       type="button"
-                      variant="ghost"
+                      variant="outline"
                       size="sm"
                       onClick={() => handleToggleAtivo(cliente)}
-                      className="text-muted-foreground hover:text-foreground"
+                      className={cn(
+                        cliente.ativo
+                          ? "border-destructive/30 bg-destructive/10 text-destructive hover:bg-destructive/20 hover:text-destructive"
+                          : "border-emerald-200 bg-emerald-50 text-emerald-700 hover:bg-emerald-100 hover:text-emerald-800"
+                      )}
                     >
                       {cliente.ativo ? "Desativar" : "Ativar"}
                     </Button>
@@ -626,6 +660,38 @@ export default function ClientesPage() {
               </Card>
             );
           })}
+        </div>
+      )}
+      {!loading && filteredClientes.length > 0 && (
+        <div className="flex flex-col items-center justify-between gap-3 sm:flex-row">
+          <p className="text-xs text-muted-foreground">
+            {startIndex + 1}–{Math.min(startIndex + pageSize, filteredClientes.length)} de {filteredClientes.length} clientes
+          </p>
+          <div className="flex items-center gap-1.5">
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              disabled={safeCurrentPage <= 1}
+              onClick={() => setCurrentPage((page) => Math.max(1, page - 1))}
+            >
+              <ChevronLeft className="h-3.5 w-3.5" />
+              Anterior
+            </Button>
+            <span className="px-2 text-xs font-medium text-foreground">
+              Página {safeCurrentPage} de {totalPages}
+            </span>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              disabled={safeCurrentPage >= totalPages}
+              onClick={() => setCurrentPage((page) => Math.min(totalPages, page + 1))}
+            >
+              Próxima
+              <ChevronRight className="h-3.5 w-3.5" />
+            </Button>
+          </div>
         </div>
       )}
     </div>

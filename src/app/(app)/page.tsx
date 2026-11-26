@@ -26,7 +26,7 @@ export default function HomePage() {
   }, [router]);
 
   return (
-    <div className="mx-auto max-w-4xl space-y-6 px-4 py-6">
+    <div className="mx-auto max-w-5xl space-y-6 px-4 py-6">
       <div className="space-y-1">
         <h1 className="text-2xl font-bold tracking-tight text-foreground">
           Painel Pix Pães

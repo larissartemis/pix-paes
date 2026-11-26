@@ -1,11 +1,16 @@
 "use client";
 
-import React, { useCallback, useRef, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
+import Link from "next/link";
 import {
   AlertCircle,
+  ArrowRight,
   Calendar,
   Check,
   CheckCircle2,
+  ChevronLeft,
+  ChevronRight,
+  Clock,
   Copy,
   FileSpreadsheet,
   FileUp,
@@ -23,9 +28,79 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import { SelectList } from "@/components/ui/select-list";
 import { formatBrCurrency, type ParsedReport } from "@/lib/report-parser";
 import { cn } from "@/lib/utils";
-import { relatoriosService } from "@/services/relatorios.service";
+import {
+  listUploadedReportsSummary,
+  saveReportItems,
+  type UploadedReportSummary,
+} from "@/services/relatorios.service";
+
+const WEEKDAY_NAMES = [
+  "Domingo",
+  "Segunda-feira",
+  "Terça-feira",
+  "Quarta-feira",
+  "Quinta-feira",
+  "Sexta-feira",
+  "Sábado",
+];
+
+const MONTH_NAMES = [
+  "Janeiro",
+  "Fevereiro",
+  "Março",
+  "Abril",
+  "Maio",
+  "Junho",
+  "Julho",
+  "Agosto",
+  "Setembro",
+  "Outubro",
+  "Novembro",
+  "Dezembro",
+];
+
+function getCurrentYearMonth(): string {
+  const now = new Date();
+  const y = now.getFullYear();
+  const m = String(now.getMonth() + 1).padStart(2, "0");
+  return `${y}-${m}`;
+}
+
+function shiftYearMonth(yearMonth: string, deltaMonths: number): string {
+  const [yStr, mStr] = yearMonth.split("-");
+  const y = Number.parseInt(yStr, 10);
+  const m = Number.parseInt(mStr, 10);
+  if (Number.isNaN(y) || Number.isNaN(m)) return getCurrentYearMonth();
+  const date = new Date(y, m - 1 + deltaMonths, 1);
+  const nextY = date.getFullYear();
+  const nextM = String(date.getMonth() + 1).padStart(2, "0");
+  return `${nextY}-${nextM}`;
+}
+
+function formatYearMonthLabel(yearMonth: string): string {
+  const [yStr, mStr] = yearMonth.split("-");
+  const mIdx = Number.parseInt(mStr, 10) - 1;
+  const monthName = MONTH_NAMES[mIdx] || mStr;
+  return `${monthName} de ${yStr}`;
+}
+
+function formatIsoDateBr(dateIso: string): string {
+  const parts = dateIso.split("-");
+  if (parts.length !== 3) return dateIso;
+  const [yyyy, mm, dd] = parts;
+  return `${dd}/${mm}/${yyyy}`;
+}
+
+function getWeekdayFromIso(dateIso: string): string {
+  const parts = dateIso.split("-").map(Number);
+  if (parts.length !== 3 || parts.some(Number.isNaN)) return "";
+  const [yyyy, mm, dd] = parts;
+  const d = new Date(yyyy, mm - 1, dd);
+  return WEEKDAY_NAMES[d.getDay()] || "";
+}
 
 export function ReportReader() {
   const [report, setReport] = useState<ParsedReport | null>(null);
@@ -43,104 +118,134 @@ export function ReportReader() {
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [isDragging, setIsDragging] = useState(false);
 
+  // Uploaded reports history state
+  const [uploadedReports, setUploadedReports] = useState<
+    UploadedReportSummary[]
+  >([]);
+  const [loadingHistory, setLoadingHistory] = useState(true);
+  const [selectedYearMonth, setSelectedYearMonth] = useState<string>(() =>
+    getCurrentYearMonth()
+  );
+
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
-  const processReportPdf = useCallback(async (file: File) => {
-    const isPdf =
-      file.type === "application/pdf" ||
-      file.name.toLowerCase().endsWith(".pdf");
-
-    if (!isPdf) {
-      setError("Formato inválido. Por favor, selecione um arquivo PDF (.pdf).");
-      return;
-    }
-
-    setError(null);
-    setSaveFeedback(null);
-    setLoading(true);
-    setFileName(file.name);
-
-    try {
-      const formData = new FormData();
-      formData.append("file", file);
-
-      const res = await fetch("/api/parse-report-pdf", {
-        method: "POST",
-        body: formData,
-      });
-
-      const data = (await res.json()) as {
-        report?: ParsedReport;
-        totalPages?: number;
-        error?: string;
-      };
-
-      if (!res.ok || !data.report) {
-        throw new Error(data.error || "Erro ao ler o relatório em PDF.");
-      }
-
-      const parsedReport = data.report;
-      setReport(parsedReport);
-      setTotalPages(data.totalPages ?? null);
-      setSearchQuery("");
-
-      // Salva automaticamente no banco após a leitura do PDF
-      if (parsedReport.itens.length > 0) {
-        setSaving(true);
-        const result = await relatoriosService.saveReportItems(
-          parsedReport.itens,
-          parsedReport.dataIso
-        );
-        setSaving(false);
-
-        if (result.error) {
-          setError(result.error);
-          return;
-        }
-
-        setSavedIds(new Set(result.savedIdsTransacao));
-
-        if (result.insertedCount > 0 && result.skippedCount > 0) {
-          setSaveFeedback({
-            type: "success",
-            message: `Relatório salvo automaticamente! ${result.insertedCount} ${
-              result.insertedCount === 1
-                ? "novo pagamento registrado"
-                : "novos pagamentos registrados"
-            } (${result.skippedCount} já ${
-              result.skippedCount === 1 ? "estava salvo" : "estavam salvos"
-            }).`,
-          });
-        } else if (result.insertedCount > 0) {
-          setSaveFeedback({
-            type: "success",
-            message: `Relatório salvo automaticamente! ${result.insertedCount} ${
-              result.insertedCount === 1
-                ? "pagamento registrado"
-                : "pagamentos registrados"
-            } com sucesso.`,
-          });
-        } else {
-          setSaveFeedback({
-            type: "info",
-            message: `Todos os ${result.skippedCount} pagamentos deste relatório já estavam salvos no sistema.`,
-          });
-        }
-      }
-    } catch (err) {
-      setReport(null);
-      setTotalPages(null);
-      setSavedIds(new Set());
-      setError(
-        err instanceof Error
-          ? err.message
-          : "Erro inesperado ao processar o PDF."
-      );
-    } finally {
-      setLoading(false);
-      setSaving(false);
-    }
+  const loadUploadedReports = useCallback(async () => {
+    setLoadingHistory(true);
+    const { summaries } = await listUploadedReportsSummary();
+    setUploadedReports(summaries);
+    setLoadingHistory(false);
   }, []);
+
+  useEffect(() => {
+    void loadUploadedReports();
+  }, [loadUploadedReports]);
+
+  const processReportPdf = useCallback(
+    async (file: File) => {
+      const isPdf =
+        file.type === "application/pdf" ||
+        file.name.toLowerCase().endsWith(".pdf");
+
+      if (!isPdf) {
+        setError(
+          "Formato inválido. Por favor, selecione um arquivo PDF (.pdf)."
+        );
+        return;
+      }
+
+      setError(null);
+      setSaveFeedback(null);
+      setLoading(true);
+      setFileName(file.name);
+
+      try {
+        const formData = new FormData();
+        formData.append("file", file);
+
+        const res = await fetch("/api/parse-report-pdf", {
+          method: "POST",
+          body: formData,
+        });
+
+        const data = (await res.json()) as {
+          report?: ParsedReport;
+          totalPages?: number;
+          error?: string;
+        };
+
+        if (!res.ok || !data.report) {
+          throw new Error(data.error || "Erro ao ler o relatório em PDF.");
+        }
+
+        const parsedReport = data.report;
+        setReport(parsedReport);
+        setTotalPages(data.totalPages ?? null);
+        setSearchQuery("");
+
+        // Salva automaticamente no banco após a leitura do PDF
+        if (parsedReport.itens.length > 0) {
+          setSaving(true);
+          const result = await saveReportItems(
+            parsedReport.itens,
+            parsedReport.dataIso
+          );
+          setSaving(false);
+
+          if (result.error) {
+            setError(result.error);
+            return;
+          }
+
+          setSavedIds(new Set(result.savedIdsTransacao));
+
+          if (result.insertedCount > 0 && result.skippedCount > 0) {
+            setSaveFeedback({
+              type: "success",
+              message: `Relatório salvo automaticamente! ${result.insertedCount} ${
+                result.insertedCount === 1
+                  ? "novo pagamento registrado"
+                  : "novos pagamentos registrados"
+              } (${result.skippedCount} já ${
+                result.skippedCount === 1 ? "estava salvo" : "estavam salvos"
+              }).`,
+            });
+          } else if (result.insertedCount > 0) {
+            setSaveFeedback({
+              type: "success",
+              message: `Relatório salvo automaticamente! ${result.insertedCount} ${
+                result.insertedCount === 1
+                  ? "pagamento registrado"
+                  : "pagamentos registrados"
+              } com sucesso.`,
+            });
+          } else {
+            setSaveFeedback({
+              type: "info",
+              message: `Todos os ${result.skippedCount} pagamentos deste relatório já estavam salvos no sistema.`,
+            });
+          }
+
+          if (parsedReport.dataIso && parsedReport.dataIso.length >= 7) {
+            setSelectedYearMonth(parsedReport.dataIso.slice(0, 7));
+          }
+          await loadUploadedReports();
+        }
+      } catch (err) {
+        setReport(null);
+        setTotalPages(null);
+        setSavedIds(new Set());
+        setError(
+          err instanceof Error
+            ? err.message
+            : "Erro inesperado ao processar o PDF."
+        );
+      } finally {
+        setLoading(false);
+        setSaving(false);
+      }
+    },
+    [loadUploadedReports]
+  );
 
   const handleCopyText = async (key: string, text: string) => {
     try {
@@ -190,6 +295,44 @@ export function ReportReader() {
   const countMatchesExpected =
     report && report.quantidadeEsperada === report.quantidadeExtraida;
 
+  // Filter uploaded reports by the selected month/year (YYYY-MM)
+  const monthlyReports = uploadedReports.filter((r) =>
+    r.dataTransacao.startsWith(selectedYearMonth)
+  );
+
+  // Totals across the selected month's uploaded reports
+  const totalUploadedPix = monthlyReports.reduce(
+    (acc, r) => acc + r.totalPix,
+    0
+  );
+  const totalUploadedConferidos = monthlyReports.reduce(
+    (acc, r) => acc + r.conferidosPix,
+    0
+  );
+  const totalUploadedPendentes = monthlyReports.reduce(
+    (acc, r) => acc + r.pendentesPix,
+    0
+  );
+  const totalUploadedValorConferido = monthlyReports.reduce(
+    (acc, r) => Math.round((acc + r.valorConferido) * 100) / 100,
+    0
+  );
+  const totalUploadedValor = monthlyReports.reduce(
+    (acc, r) => Math.round((acc + r.valorTotal) * 100) / 100,
+    0
+  );
+
+  const [selectedYearStr, selectedMonthStr] = selectedYearMonth.split("-");
+  const availableYears = Array.from(
+    new Set([
+      new Date().getFullYear().toString(),
+      selectedYearStr,
+      ...uploadedReports
+        .map((r) => r.dataTransacao.slice(0, 4))
+        .filter((y) => /^\d{4}$/.test(y)),
+    ])
+  ).sort((a, b) => b.localeCompare(a));
+
   return (
     <div className="mx-auto max-w-5xl space-y-6 px-4 py-6 pb-16">
       <input
@@ -204,43 +347,43 @@ export function ReportReader() {
         }}
       />
 
-      {/* Page Title */}
-      <div className="flex flex-col justify-between gap-3 sm:flex-row sm:items-center">
-        <div className="space-y-1">
-          <h1 className="text-2xl font-bold tracking-tight text-foreground">
-            Leitor de Relatórios PIX
-          </h1>
-          <p className="text-sm text-muted-foreground">
-            Envie o PDF do relatório diário para registrar automaticamente os
-            pagamentos recebidos.
-          </p>
-        </div>
+      {/* Upload / Reader Card */}
+      <Card className="overflow-hidden">
+        <CardHeader
+          className={cn(
+            "bg-card p-5",
+            !report && "border-b border-border"
+          )}
+        >
+          <div className="flex flex-col justify-between gap-3 sm:flex-row sm:items-center">
+            <CardTitle className="text-base font-bold uppercase tracking-wide text-primary">
+              Leitor de Relatórios PIX
+            </CardTitle>
 
-        {report && (
-          <Button
-            type="button"
-            size="sm"
-            onClick={() => fileInputRef.current?.click()}
-            disabled={loading || saving}
-          >
-            {loading || saving ? (
-              <>
-                <Loader2 className="h-4 w-4 animate-spin" />
-                Processando...
-              </>
-            ) : (
-              <>
-                <FileUp className="h-4 w-4" />
-                Enviar outro PDF
-              </>
+            {report && (
+              <Button
+                type="button"
+                size="sm"
+                onClick={() => fileInputRef.current?.click()}
+                disabled={loading || saving}
+              >
+                {loading || saving ? (
+                  <>
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                    Processando...
+                  </>
+                ) : (
+                  <>
+                    <FileUp className="h-4 w-4" />
+                    Enviar outro PDF
+                  </>
+                )}
+              </Button>
             )}
-          </Button>
-        )}
-      </div>
+          </div>
+        </CardHeader>
 
-      {/* Upload Dropzone Card (hidden once a PDF has been read) */}
-      {!report && (
-        <Card>
+        {!report && (
           <CardContent className="p-4">
             <div
               onDragOver={(e) => {
@@ -298,8 +441,8 @@ export function ReportReader() {
               </Button>
             </div>
           </CardContent>
-        </Card>
-      )}
+        )}
+      </Card>
 
       {error && (
         <div className="flex items-start gap-2.5 rounded-xl border border-destructive/30 bg-destructive/10 p-3.5 text-sm text-destructive">
@@ -493,21 +636,19 @@ export function ReportReader() {
                             key={`${item.index}-${item.idTransacao}`}
                             className="transition-colors hover:bg-muted/40"
                           >
-                            <td className="px-3 py-3 text-center font-mono text-xs text-muted-foreground">
+                            <td className="px-3 py-3 text-center text-xs text-muted-foreground">
                               {item.index}
                             </td>
-                            <td className="whitespace-nowrap px-3 py-3">
-                              <Badge variant="secondary" className="font-mono">
-                                {item.dataCurta || report.dataCurta || "—"}
-                              </Badge>
+                            <td className="whitespace-nowrap px-3 py-3 text-sm text-muted-foreground">
+                              {item.dataCurta || report.dataCurta || "—"}
                             </td>
-                            <td className="whitespace-nowrap px-3 py-3 font-mono text-xs font-medium text-foreground">
+                            <td className="whitespace-nowrap px-3 py-3 text-sm text-foreground">
                               {item.horaTransacao}
                             </td>
                             <td className="px-3 py-3 font-medium text-foreground">
                               {item.nomeRelatorio}
                             </td>
-                            <td className="whitespace-nowrap px-3 py-3 text-right font-mono text-sm font-semibold text-primary">
+                            <td className="whitespace-nowrap px-3 py-3 text-right text-sm font-semibold text-primary">
                               {item.valorFormatado}
                             </td>
                             <td className="px-3 py-3">
@@ -559,9 +700,12 @@ export function ReportReader() {
                           className="px-3 py-3 text-right text-xs uppercase tracking-wider text-muted-foreground"
                         >
                           Total ({filteredItems.length}{" "}
-                          {filteredItems.length === 1 ? "pagamento" : "pagamentos"})
+                          {filteredItems.length === 1
+                            ? "pagamento"
+                            : "pagamentos"}
+                          )
                         </td>
-                        <td className="whitespace-nowrap px-3 py-3 text-right font-mono text-sm font-bold text-primary">
+                        <td className="whitespace-nowrap px-3 py-3 text-right text-sm font-bold text-primary">
                           {formatBrCurrency(filteredTotal)}
                         </td>
                         <td colSpan={2} className="px-3 py-3" />
@@ -574,6 +718,220 @@ export function ReportReader() {
           </Card>
         </div>
       )}
+
+      {/* Uploaded Reports History Table */}
+      <Card className="overflow-hidden">
+        <CardHeader className="border-b border-border bg-card p-5">
+          <div className="flex flex-col gap-4">
+            <CardTitle className="text-base font-bold uppercase tracking-wide text-primary">
+              Relatórios Enviados — {formatYearMonthLabel(selectedYearMonth)}
+            </CardTitle>
+
+            {/* Month / Year Navigation Bar */}
+            <div className="flex flex-wrap items-center justify-between gap-2 border-t border-border pt-4">
+              {/* Month & Year Selectors */}
+              <div className="flex items-center gap-2">
+                <SelectList
+                  value={selectedMonthStr}
+                  ariaLabel="Selecionar mês"
+                  icon={<Calendar className="h-3.5 w-3.5 text-primary" />}
+                  options={MONTH_NAMES.map((name, idx) => ({
+                    value: String(idx + 1).padStart(2, "0"),
+                    label: name,
+                  }))}
+                  onChange={(nextMonth) =>
+                    setSelectedYearMonth(`${selectedYearStr}-${nextMonth}`)
+                  }
+                  className="min-w-36"
+                  menuClassName="w-40"
+                />
+
+                <SelectList
+                  value={selectedYearStr}
+                  ariaLabel="Selecionar ano"
+                  options={availableYears.map((y) => ({
+                    value: y,
+                    label: y,
+                  }))}
+                  onChange={(nextYear) =>
+                    setSelectedYearMonth(`${nextYear}-${selectedMonthStr}`)
+                  }
+                  className="min-w-22"
+                  menuClassName="w-24"
+                />
+              </div>
+
+              {/* Quick Navigation Buttons: Mês anterior | Mês atual | Próximo mês */}
+              <div className="flex flex-wrap items-center gap-1.5">
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() =>
+                    setSelectedYearMonth((prev) => shiftYearMonth(prev, -1))
+                  }
+                  className="h-8 px-2.5 text-xs"
+                >
+                  <ChevronLeft className="h-3.5 w-3.5" />
+                  Mês anterior
+                </Button>
+                <Button
+                  type="button"
+                  variant={
+                    selectedYearMonth === getCurrentYearMonth()
+                      ? "default"
+                      : "outline"
+                  }
+                  size="sm"
+                  onClick={() => setSelectedYearMonth(getCurrentYearMonth())}
+                  className="h-8 px-3 text-xs"
+                >
+                  Mês atual
+                </Button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() =>
+                    setSelectedYearMonth((prev) => shiftYearMonth(prev, 1))
+                  }
+                  className="h-8 px-2.5 text-xs"
+                >
+                  Próximo mês
+                  <ChevronRight className="h-3.5 w-3.5" />
+                </Button>
+              </div>
+            </div>
+          </div>
+        </CardHeader>
+
+        <CardContent className="p-0">
+          {loadingHistory ? (
+            <div className="flex items-center justify-center gap-2.5 py-10 text-sm text-muted-foreground">
+              <Loader2 className="h-5 w-5 animate-spin text-primary" />
+              <span>Carregando relatórios enviados...</span>
+            </div>
+          ) : monthlyReports.length === 0 ? (
+            <div className="px-4 py-10 text-center text-sm text-muted-foreground">
+              Nenhum relatório encontrado para{" "}
+              <strong className="text-foreground">
+                {formatYearMonthLabel(selectedYearMonth)}
+              </strong>
+              .
+            </div>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full border-collapse text-left text-sm">
+                <thead>
+                  <tr className="border-b border-border bg-muted/60 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                    <th className="px-4 py-3">Data do Relatório</th>
+                    <th className="px-4 py-3 text-center">Qtd. PIX</th>
+                    <th className="px-4 py-3 text-center">Conferidos</th>
+                    <th className="px-4 py-3 text-center">Pendentes</th>
+                    <th className="px-4 py-3 text-right">Valor Conferido</th>
+                    <th className="px-4 py-3 text-right">Valor Total</th>
+                    <th className="px-4 py-3 text-center">Status</th>
+                    <th className="px-4 py-3 text-right">Ações</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-border">
+                  {monthlyReports.map((item) => {
+                    const weekday = getWeekdayFromIso(item.dataTransacao);
+                    const isAllConferido =
+                      item.totalPix > 0 && item.pendentesPix === 0;
+
+                    return (
+                      <tr
+                        key={item.dataTransacao}
+                        className="transition-colors hover:bg-muted/40"
+                      >
+                        <td className="whitespace-nowrap px-4 py-3">
+                          <div className="font-semibold text-foreground">
+                            {formatIsoDateBr(item.dataTransacao)}
+                          </div>
+                          {weekday && (
+                            <div className="text-xs text-muted-foreground">
+                              {weekday}
+                            </div>
+                          )}
+                        </td>
+                        <td className="whitespace-nowrap px-4 py-3 text-center font-medium text-foreground">
+                          {item.totalPix}
+                        </td>
+                        <td className="whitespace-nowrap px-4 py-3 text-center font-semibold text-emerald-700">
+                          {item.conferidosPix}
+                        </td>
+                        <td className="whitespace-nowrap px-4 py-3 text-center font-medium text-amber-700">
+                          {item.pendentesPix}
+                        </td>
+                        <td className="whitespace-nowrap px-4 py-3 text-right font-medium text-emerald-700">
+                          {formatBrCurrency(item.valorConferido)}
+                        </td>
+                        <td className="whitespace-nowrap px-4 py-3 text-right font-semibold text-primary">
+                          {formatBrCurrency(item.valorTotal)}
+                        </td>
+                        <td className="whitespace-nowrap px-4 py-3 text-center">
+                          {isAllConferido ? (
+                            <Badge variant="success" className="gap-1">
+                              <CheckCircle2 className="h-3 w-3" />
+                              Conferido
+                            </Badge>
+                          ) : (
+                            <Badge variant="warning" className="gap-1">
+                              <Clock className="h-3 w-3" />
+                              Pendente
+                            </Badge>
+                          )}
+                        </td>
+                        <td className="whitespace-nowrap px-4 py-3 text-right">
+                          <Link
+                            href={`/conferencia?data=${item.dataTransacao}&auto_match=1`}
+                          >
+                            <Button
+                              variant={isAllConferido ? "outline" : "default"}
+                              size="sm"
+                              className="h-8 text-xs"
+                            >
+                              {isAllConferido
+                                ? "Ver conferência"
+                                : "Iniciar conferência"}
+                              <ArrowRight className="h-3.5 w-3.5" />
+                            </Button>
+                          </Link>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+                <tfoot>
+                  <tr className="border-t-2 border-border bg-muted/40 font-semibold text-foreground">
+                    <td className="px-4 py-3 text-xs uppercase tracking-wider text-muted-foreground">
+                      {monthlyReports.length}{" "}
+                      {monthlyReports.length === 1 ? "relatório" : "relatórios"}
+                    </td>
+                    <td className="whitespace-nowrap px-4 py-3 text-center text-sm font-bold text-foreground">
+                      {totalUploadedPix}
+                    </td>
+                    <td className="whitespace-nowrap px-4 py-3 text-center text-sm font-bold text-emerald-700">
+                      {totalUploadedConferidos}
+                    </td>
+                    <td className="whitespace-nowrap px-4 py-3 text-center text-sm font-bold text-amber-700">
+                      {totalUploadedPendentes}
+                    </td>
+                    <td className="whitespace-nowrap px-4 py-3 text-right text-sm font-bold text-emerald-700">
+                      {formatBrCurrency(totalUploadedValorConferido)}
+                    </td>
+                    <td className="whitespace-nowrap px-4 py-3 text-right text-sm font-bold text-primary">
+                      {formatBrCurrency(totalUploadedValor)}
+                    </td>
+                    <td colSpan={2} className="px-4 py-3" />
+                  </tr>
+                </tfoot>
+              </table>
+            </div>
+          )}
+        </CardContent>
+      </Card>
     </div>
   );
 }
